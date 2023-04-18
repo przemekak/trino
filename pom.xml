@@ -72,6 +72,7 @@
         <dep.wire.version>4.5.0</dep.wire.version>
         <dep.netty.version>4.1.79.Final</dep.netty.version>
         <dep.jna.version>5.13.0</dep.jna.version>
+        <dep.guice.version>5.1.1-SNAPSHOT</dep.guice.version>
 
         <dep.docker.images.version>79</dep.docker.images.version>
 
