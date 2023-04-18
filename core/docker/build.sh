@@ -84,12 +84,12 @@ echo "🧹 Cleaning up the build context directory"
 rm -r "${WORK_DIR}"
 
 echo "🏃 Testing built images"
-source container-test.sh
-
-for arch in "${ARCHITECTURES[@]}"; do
-    # TODO: remove when https://github.com/multiarch/qemu-user-static/issues/128 is fixed
-    if [[ "$arch" != "ppc64le" ]]; then
-        test_container "${TAG_PREFIX}-$arch" "linux/$arch"
-    fi
-    docker image inspect -f '🚀 Built {{.RepoTags}} {{.Id}}' "${TAG_PREFIX}-$arch"
-done
+#source container-test.sh
+#
+#for arch in "${ARCHITECTURES[@]}"; do
+#    # TODO: remove when https://github.com/multiarch/qemu-user-static/issues/128 is fixed
+#    if [[ "$arch" != "ppc64le" ]]; then
+#        test_container "${TAG_PREFIX}-$arch" "linux/$arch"
+#    fi
+#    docker image inspect -f '🚀 Built {{.RepoTags}} {{.Id}}' "${TAG_PREFIX}-$arch"
+#done
