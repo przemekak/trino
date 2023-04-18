@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-FROM eclipse-temurin:17-jdk AS builder
+FROM azul/prime:latest AS builder
 
 RUN \
     set -xeu && \
@@ -22,7 +22,7 @@ RUN \
     git clone https://github.com/airlift/jvmkill /tmp/jvmkill && \
     make -C /tmp/jvmkill
 
-FROM eclipse-temurin:17-jdk
+FROM azul/prime:latest
 
 RUN \
     set -xeu && \
