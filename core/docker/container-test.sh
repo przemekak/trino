@@ -25,6 +25,8 @@ function test_trino_starts {
             echo "🚨 Too many retries waiting for Trino to start" >&2
             echo "Logs from ${CONTAINER_ID} follow..."
             docker logs "${CONTAINER_ID}"
+            docker cp ${CONTAINER_ID}:/data/trino/hs_err_pid1.log .
+            cat hs_err_pid1.log
             break
         fi
         sleep ${QUERY_PERIOD}
