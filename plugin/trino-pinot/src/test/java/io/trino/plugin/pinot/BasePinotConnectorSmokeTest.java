@@ -100,7 +100,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 
-public abstract class BasePinotIntegrationConnectorSmokeTest
+public abstract class BasePinotConnectorSmokeTest
         extends BaseConnectorSmokeTest
 {
     private static final int MAX_ROWS_PER_SPLIT_FOR_SEGMENT_QUERIES = 11;
@@ -657,6 +657,12 @@ public abstract class BasePinotIntegrationConnectorSmokeTest
             case SUPPORTS_CREATE_TABLE, SUPPORTS_RENAME_TABLE -> false;
 
             case SUPPORTS_INSERT -> false;
+            case SUPPORTS_UPDATE -> false;
+            case SUPPORTS_DELETE -> false;
+            case SUPPORTS_MERGE -> false;
+
+            case SUPPORTS_CREATE_VIEW -> false;
+            case SUPPORTS_CREATE_MATERIALIZED_VIEW -> false;
 
             default -> super.hasBehavior(connectorBehavior);
         };
@@ -1864,6 +1870,91 @@ public abstract class BasePinotIntegrationConnectorSmokeTest
                 .isThrownBy(() -> query("SELECT bool_col, COUNT(long_col) FROM \"SELECT bool_col, long_col FROM " + ALL_TYPES_TABLE + " GROUP BY bool_col, long_col\""))
                 .withRootCauseInstanceOf(RuntimeException.class)
                 .withMessage("Operation not supported for DISTINCT aggregation function");
+
+        // Verify that count(<column name>) is pushed down only when it matches a COUNT(DISTINCT <column name>) query
+        assertThat(query("""
+                SELECT COUNT(bool_col) FROM
+                (SELECT bool_col FROM alltypes GROUP BY bool_col)
+                """))
+                .matches("VALUES (BIGINT '2')")
+                .isFullyPushedDown();
+        assertThat(query("""
+                SELECT bool_col, COUNT(long_col) FROM
+                (SELECT bool_col, long_col FROM alltypes GROUP BY bool_col, long_col)
+                GROUP BY bool_col
+                """))
+                .matches("""
+                    VALUES (FALSE, BIGINT '1'),
+                    (TRUE, BIGINT '9')
+                """)
+                .isFullyPushedDown();
+        // Verify that count(1) is not pushed down when the subquery selects distinct values for a single column
+        assertThat(query("""
+                SELECT COUNT(1) FROM
+                (SELECT bool_col FROM alltypes GROUP BY bool_col)
+                """))
+                .matches("VALUES (BIGINT '2')")
+                .isNotFullyPushedDown(AggregationNode.class);
+        // Verify that count(*) is not pushed down when the subquery selects distinct values for a single column
+        assertThat(query("""
+                SELECT COUNT(*) FROM
+                (SELECT bool_col FROM alltypes GROUP BY bool_col)
+                """))
+                .matches("VALUES (BIGINT '2')")
+                .isNotFullyPushedDown(AggregationNode.class);
+        // Verify that other aggregation types are not pushed down when the subquery selects distinct values for a single column
+        assertThat(query("""
+                SELECT SUM(long_col) FROM
+                (SELECT long_col FROM alltypes GROUP BY long_col)
+                """))
+                .matches("VALUES (BIGINT '-28327352787')")
+                .isNotFullyPushedDown(AggregationNode.class);
+        assertThat(query("""
+                SELECT bool_col, SUM(long_col) FROM
+                (SELECT bool_col, long_col FROM alltypes GROUP BY bool_col, long_col)
+                GROUP BY bool_col
+                """))
+                .matches("VALUES (TRUE, BIGINT '-28327352787'), (FALSE, BIGINT '0')")
+                .isNotFullyPushedDown(ProjectNode.class, AggregationNode.class, ExchangeNode.class, ExchangeNode.class, AggregationNode.class, ProjectNode.class);
+        assertThat(query("""
+                SELECT AVG(long_col) FROM
+                (SELECT long_col FROM alltypes GROUP BY long_col)
+                """))
+                .matches("VALUES (DOUBLE '-2.8327352787E9')")
+                .isNotFullyPushedDown(AggregationNode.class);
+        assertThat(query("""
+                SELECT bool_col, AVG(long_col) FROM
+                (SELECT bool_col, long_col FROM alltypes GROUP BY bool_col, long_col)
+                GROUP BY bool_col
+                """))
+                .matches("VALUES (TRUE, DOUBLE '-3.147483643E9'), (FALSE, DOUBLE '0.0')")
+                .isNotFullyPushedDown(ProjectNode.class, AggregationNode.class, ExchangeNode.class, ExchangeNode.class, AggregationNode.class, ProjectNode.class);
+        assertThat(query("""
+                SELECT MIN(long_col) FROM
+                (SELECT long_col FROM alltypes GROUP BY long_col)
+                """))
+                .matches("VALUES (BIGINT '-3147483647')")
+                .isNotFullyPushedDown(AggregationNode.class);
+        assertThat(query("""
+                SELECT bool_col, MIN(long_col) FROM
+                (SELECT bool_col, long_col FROM alltypes GROUP BY bool_col, long_col)
+                GROUP BY bool_col
+                """))
+                .matches("VALUES (TRUE, BIGINT '-3147483647'), (FALSE, BIGINT '0')")
+                .isNotFullyPushedDown(ProjectNode.class, AggregationNode.class, ExchangeNode.class, ExchangeNode.class, AggregationNode.class, ProjectNode.class);
+        assertThat(query("""
+                SELECT MAX(long_col) FROM
+                (SELECT long_col FROM alltypes GROUP BY long_col)
+                """))
+                .matches("VALUES (BIGINT '0')")
+                .isNotFullyPushedDown(AggregationNode.class);
+        assertThat(query("""
+                SELECT bool_col, MAX(long_col) FROM
+                (SELECT bool_col, long_col FROM alltypes GROUP BY bool_col, long_col)
+                GROUP BY bool_col
+                """))
+                .matches("VALUES (TRUE, BIGINT '-3147483639'), (FALSE, BIGINT '0')")
+                .isNotFullyPushedDown(ProjectNode.class, AggregationNode.class, ExchangeNode.class, ExchangeNode.class, AggregationNode.class, ProjectNode.class);
     }
 
     @Test

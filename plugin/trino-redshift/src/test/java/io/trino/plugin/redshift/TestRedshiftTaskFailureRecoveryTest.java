@@ -11,22 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.trino.plugin.pinot;
+package io.trino.plugin.redshift;
 
-import static io.trino.plugin.pinot.TestingPinotCluster.PINOT_LATEST_IMAGE_NAME;
+import io.trino.operator.RetryPolicy;
 
-public class TestPinotWithoutAuthenticationIntegrationLatestVersionConnectorSmokeTest
-        extends BasePinotIntegrationConnectorSmokeTest
+public class TestRedshiftTaskFailureRecoveryTest
+        extends BaseRedshiftFailureRecoveryTest
 {
-    @Override
-    protected boolean isSecured()
+    public TestRedshiftTaskFailureRecoveryTest()
     {
-        return false;
-    }
-
-    @Override
-    protected String getPinotImageName()
-    {
-        return PINOT_LATEST_IMAGE_NAME;
+        super(RetryPolicy.TASK);
     }
 }

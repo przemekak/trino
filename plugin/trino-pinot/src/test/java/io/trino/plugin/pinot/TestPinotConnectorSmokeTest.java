@@ -11,13 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.trino.plugin.deltalake;
+package io.trino.plugin.pinot;
 
-public class TestDeltaLakeOssDeltaLakeConnectorTest
-        extends BaseDeltaLakeMinioConnectorTest
+public class TestPinotConnectorSmokeTest
+        extends BasePinotConnectorSmokeTest
 {
-    public TestDeltaLakeOssDeltaLakeConnectorTest()
+    @Override
+    protected boolean isSecured()
     {
-        super("ossdeltalake-test-queries", "io/trino/plugin/deltalake/testing/resources/ossdeltalake/");
+        return false;
     }
 }

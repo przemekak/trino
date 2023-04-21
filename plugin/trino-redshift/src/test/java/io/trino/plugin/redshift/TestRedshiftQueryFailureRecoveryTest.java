@@ -11,14 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.trino.plugin.pinot;
+package io.trino.plugin.redshift;
 
-public class TestPinotWithoutAuthenticationIntegrationConnectorConnectorSmokeTest
-        extends BasePinotIntegrationConnectorSmokeTest
+import io.trino.operator.RetryPolicy;
+
+public class TestRedshiftQueryFailureRecoveryTest
+        extends BaseRedshiftFailureRecoveryTest
 {
-    @Override
-    protected boolean isSecured()
+    public TestRedshiftQueryFailureRecoveryTest()
     {
-        return false;
+        super(RetryPolicy.QUERY);
     }
 }
