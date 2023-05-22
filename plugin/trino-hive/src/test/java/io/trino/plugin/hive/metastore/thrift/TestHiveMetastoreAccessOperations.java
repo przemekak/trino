@@ -28,16 +28,16 @@ import org.testng.annotations.Test;
 
 import java.io.File;
 
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.CREATE_TABLE;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_DATABASE;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_PARTITIONS_BY_NAMES;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_PARTITION_NAMES_BY_FILTER;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_PARTITION_STATISTICS;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_TABLE;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_TABLE_STATISTICS;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.UPDATE_PARTITION_STATISTICS;
-import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.UPDATE_TABLE_STATISTICS;
-import static io.trino.plugin.hive.metastore.file.FileHiveMetastore.createTestingFileHiveMetastore;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.CREATE_TABLE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.GET_DATABASE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.GET_PARTITIONS_BY_NAMES;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.GET_PARTITION_NAMES_BY_FILTER;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.GET_PARTITION_STATISTICS;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.GET_TABLE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.GET_TABLE_STATISTICS;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.UPDATE_PARTITION_STATISTICS;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Method.UPDATE_TABLE_STATISTICS;
+import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 
 @Test(singleThreaded = true) // metastore invocation counters shares mutable state so can't be run from many threads simultaneously
@@ -99,7 +99,6 @@ public class TestHiveMetastoreAccessOperations
         assertMetastoreInvocations("SELECT * FROM test_select_from",
                 ImmutableMultiset.builder()
                         .add(GET_TABLE)
-                        .add(GET_TABLE_STATISTICS)
                         .build());
     }
 
@@ -113,7 +112,6 @@ public class TestHiveMetastoreAccessOperations
                         .addCopies(GET_TABLE, 2)
                         .add(GET_PARTITION_NAMES_BY_FILTER)
                         .add(GET_PARTITIONS_BY_NAMES)
-                        .add(GET_PARTITION_STATISTICS)
                         .build());
 
         assertUpdate("INSERT INTO test_select_partition SELECT 2 AS data, 20 AS part", 1);
@@ -122,7 +120,6 @@ public class TestHiveMetastoreAccessOperations
                         .addCopies(GET_TABLE, 2)
                         .add(GET_PARTITION_NAMES_BY_FILTER)
                         .add(GET_PARTITIONS_BY_NAMES)
-                        .add(GET_PARTITION_STATISTICS)
                         .build());
 
         // Specify a specific partition
@@ -142,7 +139,6 @@ public class TestHiveMetastoreAccessOperations
         assertMetastoreInvocations("SELECT * FROM test_select_from_where WHERE age = 2",
                 ImmutableMultiset.builder()
                         .add(GET_TABLE)
-                        .add(GET_TABLE_STATISTICS)
                         .build());
     }
 
@@ -155,7 +151,6 @@ public class TestHiveMetastoreAccessOperations
         assertMetastoreInvocations("SELECT * FROM test_select_view_view",
                 ImmutableMultiset.builder()
                         .addCopies(GET_TABLE, 2)
-                        .add(GET_TABLE_STATISTICS)
                         .build());
     }
 
@@ -168,7 +163,6 @@ public class TestHiveMetastoreAccessOperations
         assertMetastoreInvocations("SELECT * FROM test_select_view_where_view WHERE age = 2",
                 ImmutableMultiset.builder()
                         .addCopies(GET_TABLE, 2)
-                        .add(GET_TABLE_STATISTICS)
                         .build());
     }
 
@@ -241,7 +235,6 @@ public class TestHiveMetastoreAccessOperations
         assertMetastoreInvocations("ANALYZE test_analyze",
                 ImmutableMultiset.builder()
                         .add(GET_TABLE)
-                        .add(GET_TABLE_STATISTICS)
                         .add(UPDATE_TABLE_STATISTICS)
                         .build());
     }

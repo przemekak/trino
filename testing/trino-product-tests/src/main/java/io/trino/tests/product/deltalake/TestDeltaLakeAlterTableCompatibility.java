@@ -15,7 +15,6 @@ package io.trino.tests.product.deltalake;
 
 import io.trino.tempto.assertions.QueryAssert;
 import io.trino.testng.services.Flaky;
-import io.trino.tests.product.deltalake.util.DatabricksVersion;
 import org.assertj.core.api.Assertions;
 import org.testng.annotations.Test;
 
@@ -32,7 +31,6 @@ import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_73;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_91;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
-import static io.trino.tests.product.deltalake.util.DatabricksVersion.DATABRICKS_122_RUNTIME_VERSION;
 import static io.trino.tests.product.deltalake.util.DatabricksVersion.DATABRICKS_91_RUNTIME_VERSION;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_MATCH;
@@ -41,6 +39,7 @@ import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getColumn
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getColumnCommentOnTrino;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getDatabricksRuntimeVersion;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getTableCommentOnDelta;
+import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getTableCommentOnTrino;
 import static io.trino.tests.product.utils.QueryExecutors.onDelta;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
@@ -177,9 +176,7 @@ public class TestDeltaLakeAlterTableCompatibility
 
         try {
             onTrino().executeQuery("COMMENT ON TABLE delta.default." + tableName + " IS 'test comment'");
-            assertThat(onTrino().executeQuery("SELECT comment FROM system.metadata.table_comments WHERE catalog_name = 'delta' AND schema_name = 'default' AND table_name = '" + tableName + "'"))
-                    .containsOnly(row("test comment"));
-
+            assertEquals(getTableCommentOnTrino("default", tableName), "test comment");
             assertEquals(getTableCommentOnDelta("default", tableName), "test comment");
         }
         finally {
@@ -444,9 +441,7 @@ public class TestDeltaLakeAlterTableCompatibility
                     .contains("b BIGINT GENERATED ALWAYS AS IDENTITY");
             onDelta().executeQuery("INSERT INTO default." + tableName + " (a) VALUES (0)");
 
-            DatabricksVersion databricksRuntimeVersion = getDatabricksRuntimeVersion().orElseThrow();
-            // Actual value for IDENTITY column varies between Databricks versions
-            QueryAssert.Row expected = databricksRuntimeVersion.isOlderThan(DATABRICKS_122_RUNTIME_VERSION) ? row(0, 1) : row(0, 2);
+            QueryAssert.Row expected = row(0, 1);
             assertThat(onTrino().executeQuery("SELECT * FROM delta.default." + tableName)).containsOnly(expected);
             assertThat(onDelta().executeQuery("SELECT * FROM default." + tableName)).containsOnly(expected);
         }

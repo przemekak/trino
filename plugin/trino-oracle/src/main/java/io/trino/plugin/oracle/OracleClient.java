@@ -196,7 +196,6 @@ public class OracleClient
             .put(TIMESTAMP_TZ_MILLIS, WriteMapping.longMapping("timestamp(3) with time zone", oracleTimestampWithTimeZoneWriteFunction()))
             .buildOrThrow();
 
-    private final boolean disableAutomaticFetchSize;
     private final boolean synonymsEnabled;
     private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
     private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
@@ -210,9 +209,8 @@ public class OracleClient
             IdentifierMapping identifierMapping,
             RemoteQueryModifier queryModifier)
     {
-        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, false);
+        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, true);
 
-        this.disableAutomaticFetchSize = oracleConfig.isDisableAutomaticFetchSize();
         this.synonymsEnabled = oracleConfig.isSynonymsEnabled();
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
@@ -262,12 +260,9 @@ public class OracleClient
             throws SQLException
     {
         PreparedStatement statement = connection.prepareStatement(sql);
-        if (disableAutomaticFetchSize) {
-            statement.setFetchSize(1000);
-        }
         // This is a heuristic, not exact science. A better formula can perhaps be found with measurements.
         // Column count is not known for non-SELECT queries. Not setting fetch size for these.
-        else if (columnCount.isPresent()) {
+        if (columnCount.isPresent()) {
             statement.setFetchSize(max(100_000 / columnCount.get(), 1_000));
         }
         return statement;
@@ -299,6 +294,20 @@ public class OracleClient
     public void dropSchema(ConnectorSession session, String schemaName)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping schemas");
+    }
+
+    @Override
+    protected void dropTable(ConnectorSession session, RemoteTableName remoteTableName, boolean temporaryTable)
+    {
+        String sql = "DROP TABLE " + quoted(remoteTableName);
+        // Oracle puts dropped tables into a recycling bin, which keeps them accessible for a period of time.
+        // PURGE will bypass the bin and completely delete the table immediately.
+        // We should only PURGE the table if it is a temporary table that trino created,
+        // as purging all dropped tables may be unexpected behavior for our clients.
+        if (temporaryTable) {
+            sql += " PURGE";
+        }
+        execute(session, sql);
     }
 
     @Override

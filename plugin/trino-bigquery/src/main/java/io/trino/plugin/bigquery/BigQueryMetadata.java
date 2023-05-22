@@ -41,7 +41,6 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.connector.Assignment;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
-import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorOutputMetadata;
@@ -50,7 +49,6 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableLayout;
 import io.trino.spi.connector.ConnectorTableMetadata;
-import io.trino.spi.connector.ConnectorTableSchema;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
@@ -523,7 +521,7 @@ public class BigQueryMetadata
                 quote(remoteTableName.getProjectId()),
                 quote(remoteTableName.getDatasetName()),
                 quote(remoteTableName.getTableName()));
-        client.executeUpdate(QueryJobConfiguration.of(sql));
+        client.executeUpdate(session, QueryJobConfiguration.of(sql));
     }
 
     @Override
@@ -605,7 +603,7 @@ public class BigQueryMetadata
                     quote(pageSinkIdColumnName),
                     quote(pageSinkIdColumnName));
 
-            client.executeUpdate(QueryJobConfiguration.of(insertSql));
+            client.executeUpdate(session, QueryJobConfiguration.of(insertSql));
         }
         finally {
             try {
@@ -638,8 +636,7 @@ public class BigQueryMetadata
                 quote(remoteTableName.getProjectId()),
                 quote(remoteTableName.getDatasetName()),
                 quote(remoteTableName.getTableName()));
-        client.executeUpdate(QueryJobConfiguration.newBuilder(sql)
-                .setQuery(sql)
+        client.executeUpdate(session, QueryJobConfiguration.newBuilder(sql)
                 .addPositionalParameter(QueryParameterValue.string(newComment.orElse(null)))
                 .build());
     }
@@ -658,8 +655,7 @@ public class BigQueryMetadata
                 quote(remoteTableName.getDatasetName()),
                 quote(remoteTableName.getTableName()),
                 quote(column.getName()));
-        client.executeUpdate(QueryJobConfiguration.newBuilder(sql)
-                .setQuery(sql)
+        client.executeUpdate(session, QueryJobConfiguration.newBuilder(sql)
                 .addPositionalParameter(QueryParameterValue.string(newComment.orElse(null)))
                 .build());
     }
@@ -723,13 +719,7 @@ public class BigQueryMetadata
         }
 
         ConnectorTableHandle tableHandle = ((QueryHandle) handle).getTableHandle();
-        ConnectorTableSchema tableSchema = getTableSchema(session, tableHandle);
-        Map<String, ColumnHandle> columnHandlesByName = getColumnHandles(session, tableHandle);
-        List<ColumnHandle> columnHandles = tableSchema.getColumns().stream()
-                .map(ColumnSchema::getName)
-                .map(columnHandlesByName::get)
-                .collect(toImmutableList());
-
+        List<ColumnHandle> columnHandles = ImmutableList.copyOf(getColumnHandles(session, tableHandle).values());
         return Optional.of(new TableFunctionApplicationResult<>(tableHandle, columnHandles));
     }
 

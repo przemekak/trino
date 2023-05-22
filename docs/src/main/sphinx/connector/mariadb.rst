@@ -105,14 +105,26 @@ to the following table:
   * - ``TINYINT``
     - ``TINYINT``
     -
+  * - ``TINYINT UNSIGNED``
+    - ``SMALLINT``
+    -
   * - ``SMALLINT``
     - ``SMALLINT``
+    -
+  * - ``SMALLINT UNSIGNED``
+    - ``INTEGER``
     -
   * - ``INT``
     - ``INTEGER``
     -
+  * - ``INT UNSIGNED``
+    - ``BIGINT``
+    -
   * - ``BIGINT``
     - ``BIGINT``
+    -
+  * - ``BIGINT UNSIGNED``
+    - ``DECIMAL(20, 0)``
     -
   * - ``FLOAT``
     - ``REAL``
@@ -290,8 +302,6 @@ running a query natively may be faster.
 
 .. include:: query-passthrough-warning.fragment
 
-.. include:: polymorphic-table-function-ordering.fragment
-
 As an example, query the ``example`` catalog and select the age of employees by
 using ``TIMESTAMPDIFF`` and ``CURDATE``::
 
@@ -310,6 +320,8 @@ using ``TIMESTAMPDIFF`` and ``CURDATE``::
             tiny.employees'
         )
       );
+
+.. include:: query-table-function-ordering.fragment
 
 Performance
 -----------

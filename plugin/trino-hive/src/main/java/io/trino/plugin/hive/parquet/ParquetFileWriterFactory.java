@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.hive.parquet;
 
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
@@ -22,6 +23,7 @@ import io.trino.parquet.writer.ParquetSchemaConverter;
 import io.trino.parquet.writer.ParquetWriterOptions;
 import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.FileWriter;
+import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HiveFileWriterFactory;
 import io.trino.plugin.hive.HiveSessionProperties;
@@ -33,10 +35,6 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.parquet.format.CompressionCodec;
-import org.apache.parquet.hadoop.ParquetOutputFormat;
 import org.joda.time.DateTimeZone;
 import org.weakref.jmx.Flatten;
 import org.weakref.jmx.Managed;
@@ -90,11 +88,11 @@ public class ParquetFileWriterFactory
 
     @Override
     public Optional<FileWriter> createFileWriter(
-            Path path,
+            Location location,
             List<String> inputColumnNames,
             StorageFormat storageFormat,
+            HiveCompressionCodec compressionCodec,
             Properties schema,
-            JobConf conf,
             ConnectorSession session,
             OptionalInt bucketNumber,
             AcidTransaction transaction,
@@ -115,10 +113,6 @@ public class ParquetFileWriterFactory
                 .setBatchSize(HiveSessionProperties.getParquetBatchSize(session))
                 .build();
 
-        CompressionCodec compressionCodec = Optional.ofNullable(conf.get(ParquetOutputFormat.COMPRESSION))
-                .map(CompressionCodec::valueOf)
-                .orElse(CompressionCodec.GZIP);
-
         List<String> fileColumnNames = getColumnNames(schema);
         List<Type> fileColumnTypes = getColumnTypes(schema).stream()
                 .map(hiveType -> hiveType.getType(typeManager, getTimestampPrecision(session)))
@@ -128,11 +122,10 @@ public class ParquetFileWriterFactory
                 .mapToInt(inputColumnNames::indexOf)
                 .toArray();
 
-        String pathString = path.toString();
         try {
             TrinoFileSystem fileSystem = fileSystemFactory.create(session);
 
-            Closeable rollbackAction = () -> fileSystem.deleteFile(pathString);
+            Closeable rollbackAction = () -> fileSystem.deleteFile(location);
 
             ParquetSchemaConverter schemaConverter = new ParquetSchemaConverter(
                     fileColumnTypes,
@@ -144,7 +137,7 @@ public class ParquetFileWriterFactory
             if (isParquetOptimizedWriterValidate(session)) {
                 validationInputFactory = Optional.of(() -> {
                     try {
-                        TrinoInputFile inputFile = fileSystem.newInputFile(pathString);
+                        TrinoInputFile inputFile = fileSystem.newInputFile(location);
                         return new TrinoParquetDataSource(inputFile, new ParquetReaderOptions(), readStats);
                     }
                     catch (IOException e) {
@@ -154,7 +147,7 @@ public class ParquetFileWriterFactory
             }
 
             return Optional.of(new ParquetFileWriter(
-                    fileSystem.newOutputFile(pathString),
+                    fileSystem.newOutputFile(location),
                     rollbackAction,
                     fileColumnTypes,
                     fileColumnNames,
@@ -162,7 +155,7 @@ public class ParquetFileWriterFactory
                     schemaConverter.getPrimitiveTypes(),
                     parquetWriterOptions,
                     fileInputColumnIndexes,
-                    compressionCodec,
+                    compressionCodec.getParquetCompressionCodec(),
                     nodeVersion.toString(),
                     isParquetOptimizedReaderEnabled(session),
                     Optional.of(parquetTimeZone),

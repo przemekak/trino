@@ -38,10 +38,10 @@ RUN \
     chown -R "trino:trino" /usr/lib/trino /data/trino
 
 ARG TRINO_VERSION
-COPY trino-cli-${TRINO_VERSION}-executable.jar /usr/bin/trino
+COPY --chown=trino:trino trino-cli-${TRINO_VERSION}-executable.jar /usr/bin/trino
 COPY --chown=trino:trino trino-server-${TRINO_VERSION} /usr/lib/trino
 COPY --chown=trino:trino default/etc /etc/trino
-COPY --chown=trino:trino --from=builder /tmp/jvmkill/libjvmkill.so /usr/lib/trino/bin
+COPY --chown=trino:trino --from=jvmkill /libjvmkill.so /usr/lib/trino/bin
 
 EXPOSE 8080
 USER trino:trino

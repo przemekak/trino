@@ -223,7 +223,18 @@ public interface ConnectorMetadata
      *
      * @throws RuntimeException if table handle is no longer valid
      */
-    @Deprecated // ... and optimized implementations already removed
+    default SchemaTableName getTableName(ConnectorSession session, ConnectorTableHandle table)
+    {
+        return getSchemaTableName(session, table);
+    }
+
+    /**
+     * Return schema table name for the specified table handle.
+     * This method is useful when requiring only {@link SchemaTableName} without other objects.
+     *
+     * @throws RuntimeException if table handle is no longer valid
+     */
+    @Deprecated // replaced with getTableName
     default SchemaTableName getSchemaTableName(ConnectorSession session, ConnectorTableHandle table)
     {
         return getTableSchema(session, table).getTable();
@@ -258,6 +269,9 @@ public interface ConnectorMetadata
     /**
      * List table, view and materialized view names, possibly filtered by schema. An empty list is returned if none match.
      * An empty list is returned also when schema name does not refer to an existing schema.
+     *
+     * @see #listViews(ConnectorSession, Optional)
+     * @see #listMaterializedViews(ConnectorSession, Optional)
      */
     default List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
     {
@@ -730,8 +744,10 @@ public interface ConnectorMetadata
     }
 
     /**
-     * List view names, possibly filtered by schema. An empty list is returned if none match.
+     * List view names (but not materialized views), possibly filtered by schema. An empty list is returned if none match.
      * An empty list is returned also when schema name does not refer to an existing schema.
+     *
+     * @see #listMaterializedViews(ConnectorSession, Optional)
      */
     default List<SchemaTableName> listViews(ConnectorSession session, Optional<String> schemaName)
     {
@@ -739,7 +755,7 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Gets the definitions of views, possibly filtered by schema.
+     * Gets the definitions of views (but not materialized views), possibly filtered by schema.
      * This optional method may be implemented by connectors that can support fetching
      * view data in bulk. It is used to implement {@code information_schema.views}.
      */

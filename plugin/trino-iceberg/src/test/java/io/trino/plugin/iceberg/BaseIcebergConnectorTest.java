@@ -20,6 +20,7 @@ import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.Session;
 import io.trino.filesystem.FileIterator;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
@@ -28,10 +29,13 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
 import io.trino.operator.OperatorStats;
+import io.trino.plugin.hive.TestingHivePlugin;
+import io.trino.plugin.iceberg.fileio.ForwardingFileIo;
 import io.trino.spi.QueryId;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
@@ -40,6 +44,7 @@ import io.trino.sql.planner.plan.OutputNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.DataProviders;
+import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.MaterializedRow;
@@ -53,6 +58,9 @@ import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.io.FileIO;
 import org.intellij.lang.annotations.Language;
 import org.testng.SkipException;
 import org.testng.annotations.BeforeClass;
@@ -94,20 +102,24 @@ import static com.google.common.collect.Iterables.concat;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
-import static io.trino.SystemSessionProperties.PREFERRED_WRITE_PARTITIONING_MIN_NUMBER_OF_PARTITIONS;
 import static io.trino.SystemSessionProperties.SCALE_WRITERS;
 import static io.trino.SystemSessionProperties.TASK_PARTITIONED_WRITER_COUNT;
 import static io.trino.SystemSessionProperties.TASK_WRITER_COUNT;
+import static io.trino.SystemSessionProperties.USE_PREFERRED_WRITE_PARTITIONING;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
 import static io.trino.plugin.hive.HiveTestUtils.SESSION;
+import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
 import static io.trino.plugin.iceberg.IcebergFileFormat.AVRO;
 import static io.trino.plugin.iceberg.IcebergFileFormat.ORC;
 import static io.trino.plugin.iceberg.IcebergFileFormat.PARQUET;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
+import static io.trino.plugin.iceberg.IcebergSessionProperties.COLLECT_EXTENDED_STATISTICS_ON_WRITE;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.EXTENDED_STATISTICS_ENABLED;
 import static io.trino.plugin.iceberg.IcebergSplitManager.ICEBERG_DOMAIN_COMPACTION_THRESHOLD;
 import static io.trino.plugin.iceberg.IcebergTestUtils.withSmallRowGroups;
 import static io.trino.plugin.iceberg.IcebergUtil.TRINO_QUERY_ID_NAME;
+import static io.trino.plugin.iceberg.procedure.RegisterTableProcedure.getLatestMetadataLocation;
 import static io.trino.spi.predicate.Domain.multipleValues;
 import static io.trino.spi.predicate.Domain.singleValue;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -182,7 +194,7 @@ public abstract class BaseIcebergConnectorTest
     @BeforeClass
     public void initFileSystemFactory()
     {
-        this.fileSystemFactory = new HdfsFileSystemFactory(HDFS_ENVIRONMENT);
+        this.fileSystemFactory = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS);
     }
 
     @BeforeClass
@@ -323,14 +335,6 @@ public abstract class BaseIcebergConnectorTest
                         "   format_version = 2,\n" +
                         "   location = '\\E.*/iceberg_data/tpch/orders-.*\\Q'\n" +
                         ")\\E");
-    }
-
-    @Override
-    protected void checkInformationSchemaViewsForMaterializedView(String schemaName, String viewName)
-    {
-        // TODO should probably return materialized view, as it's also a view -- to be double checked
-        assertThatThrownBy(() -> super.checkInformationSchemaViewsForMaterializedView(schemaName, viewName))
-                .hasMessageFindingMatch("(?s)Expecting.*to contain:.*\\Q[(" + viewName + ")]");
     }
 
     @Test
@@ -4193,7 +4197,7 @@ public abstract class BaseIcebergConnectorTest
             throws IOException
     {
         Path tempFile = getDistributedQueryRunner().getCoordinator().getBaseDataDir().resolve(randomUUID() + "-manifest-copy");
-        try (InputStream inputStream = fileSystemFactory.create(SESSION).newInputFile(location).newStream()) {
+        try (InputStream inputStream = fileSystemFactory.create(SESSION).newInputFile(Location.of(location)).newStream()) {
             Files.copy(inputStream, tempFile);
         }
         return new DataFileReader<>(tempFile.toFile(), new GenericDatumReader<>());
@@ -4536,16 +4540,10 @@ public abstract class BaseIcebergConnectorTest
     public Object[][] repartitioningDataProvider()
     {
         Session defaultSession = getSession();
-        // For identity-only partitioning, Iceberg connector returns ConnectorTableLayout with partitionColumns set, but without partitioning.
-        // This is treated by engine as "preferred", but not mandatory partitioning, and gets ignored if stats suggest number of partitions
-        // written is low. Without partitioning, number of files created is nondeterministic, as a writer (worker node) may or may not receive data.
-        Session obeyConnectorPartitioning = Session.builder(defaultSession)
-                .setSystemProperty(PREFERRED_WRITE_PARTITIONING_MIN_NUMBER_OF_PARTITIONS, "1")
-                .build();
 
         return new Object[][] {
                 // identity partitioning column
-                {obeyConnectorPartitioning, "'orderstatus'", 3},
+                {defaultSession, "'orderstatus'", 3},
                 // bucketing
                 {defaultSession, "'bucket(custkey, 13)'", 13},
                 // varchar-based
@@ -4571,31 +4569,38 @@ public abstract class BaseIcebergConnectorTest
 
     private void testStatsBasedRepartitionData(boolean ctas)
     {
-        Session sessionRepartitionSmall = Session.builder(getSession())
-                .setSystemProperty(PREFERRED_WRITE_PARTITIONING_MIN_NUMBER_OF_PARTITIONS, "2")
-                .build();
-        Session sessionRepartitionMany = Session.builder(getSession())
-                .setSystemProperty(PREFERRED_WRITE_PARTITIONING_MIN_NUMBER_OF_PARTITIONS, "5")
-                .setSystemProperty(SCALE_WRITERS, "false")
-                .build();
-        // Use DISTINCT to add data redistribution between source table and the writer. This makes it more likely that all writers get some data.
-        String sourceRelation = "(SELECT DISTINCT orderkey, custkey, orderstatus FROM tpch.tiny.orders)";
-        testRepartitionData(
-                sessionRepartitionSmall,
-                sourceRelation,
-                ctas,
-                "'orderstatus'",
-                3);
-        // Test uses relatively small table (60K rows). When engine doesn't redistribute data for writes,
-        // occasionally a worker node doesn't get any data and fewer files get created.
-        assertEventually(new Duration(3, MINUTES), () -> {
+        String catalog = getSession().getCatalog().orElseThrow();
+        try (TestTable sourceTable = new TestTable(
+                sql -> assertQuerySucceeds(
+                        Session.builder(getSession())
+                                .setCatalogSessionProperty(catalog, COLLECT_EXTENDED_STATISTICS_ON_WRITE, "true")
+                                .build(),
+                        sql),
+                "temp_table_analyzed",
+                "AS SELECT orderkey, custkey, orderstatus FROM tpch.\"sf0.03\".orders")) {
+            Session sessionRepartitionMany = Session.builder(getSession())
+                    .setSystemProperty(SCALE_WRITERS, "false")
+                    .setSystemProperty(USE_PREFERRED_WRITE_PARTITIONING, "false")
+                    .build();
+            // Use DISTINCT to add data redistribution between source table and the writer. This makes it more likely that all writers get some data.
+            String sourceRelation = "(SELECT DISTINCT orderkey, custkey, orderstatus FROM " + sourceTable.getName() + ")";
             testRepartitionData(
-                    sessionRepartitionMany,
+                    getSession(),
                     sourceRelation,
                     ctas,
                     "'orderstatus'",
-                    9);
-        });
+                    3);
+            // Test uses relatively small table (45K rows). When engine doesn't redistribute data for writes,
+            // occasionally a worker node doesn't get any data and fewer files get created.
+            assertEventually(new Duration(3, MINUTES), () -> {
+                testRepartitionData(
+                        sessionRepartitionMany,
+                        sourceRelation,
+                        ctas,
+                        "'orderstatus'",
+                        9);
+            });
+        }
     }
 
     private void testRepartitionData(Session session, String sourceRelation, boolean ctas, String partitioning, int expectedFiles)
@@ -4930,11 +4935,16 @@ public abstract class BaseIcebergConnectorTest
                 getSession(),
                 selectQuery,
                 statsWithPushdown -> {
+                    DataSize physicalDataSizeWithPushdown = statsWithPushdown.getPhysicalInputDataSize();
                     DataSize processedDataSizeWithPushdown = statsWithPushdown.getProcessedInputDataSize();
                     assertQueryStats(
                             sessionWithoutPushdown,
                             selectQuery,
-                            statsWithoutPushdown -> assertThat(statsWithoutPushdown.getProcessedInputDataSize()).isGreaterThan(processedDataSizeWithPushdown),
+                            statsWithoutPushdown -> {
+                                //TODO (https://github.com/trinodb/trino/issues/17156) add dereference pushdown on the physical layer
+                                assertThat(statsWithoutPushdown.getPhysicalInputDataSize()).isEqualTo(physicalDataSizeWithPushdown);
+                                assertThat(statsWithoutPushdown.getProcessedInputDataSize()).isGreaterThan(processedDataSizeWithPushdown);
+                            },
                             results -> assertEquals(results.getOnlyColumnAsSet(), expected));
                 },
                 results -> assertEquals(results.getOnlyColumnAsSet(), expected));
@@ -5037,7 +5047,6 @@ public abstract class BaseIcebergConnectorTest
                 .setCatalog(getQueryRunner().getDefaultSession().getCatalog())
                 .setSchema(getQueryRunner().getDefaultSession().getSchema())
                 .setSystemProperty("use_preferred_write_partitioning", "true")
-                .setSystemProperty("preferred_write_partitioning_min_number_of_partitions", "100")
                 .build();
         String tableName = "test_repartitiong_during_optimize_" + randomNameSuffix();
         assertUpdate(session, "CREATE TABLE " + tableName + " (key varchar, value integer) WITH (format_version = " + formatVersion + ", partitioning = ARRAY['key'])");
@@ -6685,6 +6694,232 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
+    @Test
+    public void testDropTableWithMissingMetadataFile()
+            throws Exception
+    {
+        String tableName = "test_drop_table_with_missing_metadata_file_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 x, 'INDIA' y", 1);
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        String tableLocation = getTableLocation(tableName);
+        Location metadataLocation = Location.of(getLatestMetadataLocation(trinoFileSystem, tableLocation));
+
+        // Delete current metadata file
+        trinoFileSystem.deleteFile(metadataLocation);
+        assertFalse(trinoFileSystem.newInputFile(metadataLocation).exists(), "Current metadata file should not exist");
+
+        // try to drop table
+        assertUpdate("DROP TABLE " + tableName);
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertFalse(trinoFileSystem.listFiles(Location.of(tableLocation)).hasNext(), "Table location should not exist");
+    }
+
+    @Test
+    public void testDropTableWithMissingSnapshotFile()
+            throws Exception
+    {
+        String tableName = "test_drop_table_with_missing_snapshot_file_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 x, 'INDIA' y", 1);
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        String tableLocation = getTableLocation(tableName);
+        String metadataLocation = getLatestMetadataLocation(trinoFileSystem, tableLocation);
+        TableMetadata tableMetadata = TableMetadataParser.read(new ForwardingFileIo(trinoFileSystem), metadataLocation);
+        Location currentSnapshotFile = Location.of(tableMetadata.currentSnapshot().manifestListLocation());
+
+        // Delete current snapshot file
+        trinoFileSystem.deleteFile(currentSnapshotFile);
+        assertFalse(trinoFileSystem.newInputFile(currentSnapshotFile).exists(), "Current snapshot file should not exist");
+
+        // try to drop table
+        assertUpdate("DROP TABLE " + tableName);
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertFalse(trinoFileSystem.listFiles(Location.of(tableLocation)).hasNext(), "Table location should not exist");
+    }
+
+    @Test
+    public void testDropTableWithMissingManifestListFile()
+            throws Exception
+    {
+        String tableName = "test_drop_table_with_missing_manifest_list_file_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 x, 'INDIA' y", 1);
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        String tableLocation = getTableLocation(tableName);
+        String metadataLocation = getLatestMetadataLocation(trinoFileSystem, tableLocation);
+        FileIO fileIo = new ForwardingFileIo(trinoFileSystem);
+        TableMetadata tableMetadata = TableMetadataParser.read(fileIo, metadataLocation);
+        Location manifestListFile = Location.of(tableMetadata.currentSnapshot().allManifests(fileIo).get(0).path());
+
+        // Delete Manifest List file
+        trinoFileSystem.deleteFile(manifestListFile);
+        assertFalse(trinoFileSystem.newInputFile(manifestListFile).exists(), "Manifest list file should not exist");
+
+        // try to drop table
+        assertUpdate("DROP TABLE " + tableName);
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertFalse(trinoFileSystem.listFiles(Location.of(tableLocation)).hasNext(), "Table location should not exist");
+    }
+
+    @Test
+    public void testDropTableWithMissingDataFile()
+            throws Exception
+    {
+        String tableName = "test_drop_table_with_missing_data_file_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 x, 'INDIA' y", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (2, 'POLAND')", 1);
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        Location tableLocation = Location.of(getTableLocation(tableName));
+        Location tableDataPath = tableLocation.appendPath("data");
+        FileIterator fileIterator = trinoFileSystem.listFiles(tableDataPath);
+        assertTrue(fileIterator.hasNext());
+        Location dataFile = fileIterator.next().location();
+
+        // Delete data file
+        trinoFileSystem.deleteFile(dataFile);
+        assertFalse(trinoFileSystem.newInputFile(dataFile).exists(), "Data file should not exist");
+
+        // try to drop table
+        assertUpdate("DROP TABLE " + tableName);
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertFalse(trinoFileSystem.listFiles(tableLocation).hasNext(), "Table location should not exist");
+    }
+
+    @Test
+    public void testDropTableWithNonExistentTableLocation()
+            throws Exception
+    {
+        String tableName = "test_drop_table_with_non_existent_table_location_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 x, 'INDIA' y", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (2, 'POLAND')", 1);
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        Location tableLocation = Location.of(getTableLocation(tableName));
+
+        // Delete table location
+        trinoFileSystem.deleteDirectory(tableLocation);
+        assertFalse(trinoFileSystem.listFiles(tableLocation).hasNext(), "Table location should not exist");
+
+        // try to drop table
+        assertUpdate("DROP TABLE " + tableName);
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+    }
+
+    @Test
+    public void testCorruptedTableLocation()
+            throws Exception
+    {
+        String tableName = "test_corrupted_table_location_" + randomNameSuffix();
+        SchemaTableName schemaTableName = SchemaTableName.schemaTableName(getSession().getSchema().orElseThrow(), tableName);
+        assertUpdate("CREATE TABLE " + tableName + " (id INT, country VARCHAR, independence ROW(month VARCHAR, year INT))");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'INDIA', ROW ('Aug', 1947)), (2, 'POLAND', ROW ('Nov', 1918)), (3, 'USA', ROW ('Jul', 1776))", 3);
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        Location tableLocation = Location.of(getTableLocation(tableName));
+        Location metadataLocation = tableLocation.appendPath("metadata");
+
+        // break the table by deleting all metadata files
+        trinoFileSystem.deleteDirectory(metadataLocation);
+        assertFalse(trinoFileSystem.listFiles(metadataLocation).hasNext(), "Metadata location should not exist");
+
+        // Assert queries fail cleanly
+        assertQueryFails("TABLE " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("SELECT * FROM " + tableName + " WHERE false", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("SELECT 1 FROM " + tableName + " WHERE false", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("SHOW CREATE TABLE " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("CREATE TABLE a_new_table (LIKE " + tableName + " EXCLUDING PROPERTIES)", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("DESCRIBE " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("SHOW COLUMNS FROM " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("SHOW STATS FOR " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ANALYZE " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ALTER TABLE " + tableName + " EXECUTE optimize", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ALTER TABLE " + tableName + " EXECUTE vacuum", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ALTER TABLE " + tableName + " RENAME TO bad_person_some_new_name", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ALTER TABLE " + tableName + " ADD COLUMN foo int", "Metadata not found in metadata location for table " + schemaTableName);
+        // TODO (https://github.com/trinodb/trino/issues/16248) ADD field
+        assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN country", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN independence.month", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES format = 'PARQUET'", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("INSERT INTO " + tableName + " VALUES (NULL, NULL, ROW(NULL, NULL))", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("UPDATE " + tableName + " SET country = 'AUSTRIA'", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("DELETE FROM " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("MERGE INTO  " + tableName + " USING (SELECT 1 a) input ON true WHEN MATCHED THEN DELETE", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("TRUNCATE TABLE " + tableName, "This connector does not support truncating tables");
+        assertQueryFails("COMMENT ON TABLE " + tableName + " IS NULL", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("COMMENT ON COLUMN " + tableName + ".foo IS NULL", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("CALL iceberg.system.rollback_to_snapshot(CURRENT_SCHEMA, '" + tableName + "', 8954597067493422955)", "Metadata not found in metadata location for table " + schemaTableName);
+
+        // Avoid failing metadata queries
+        assertQuery("SHOW TABLES LIKE 'test_corrupted_table_location_%' ESCAPE '\\'", "VALUES '" + tableName + "'");
+        assertQueryReturnsEmptyResult("SELECT column_name, data_type FROM information_schema.columns " +
+                "WHERE table_schema = CURRENT_SCHEMA AND table_name LIKE 'test_corrupted_table_location_%' ESCAPE '\\'");
+        assertQueryReturnsEmptyResult("SELECT column_name, data_type FROM system.jdbc.columns " +
+                "WHERE table_cat = CURRENT_CATALOG AND table_schem = CURRENT_SCHEMA AND table_name LIKE 'test_corrupted_table_location_%' ESCAPE '\\'");
+
+        // DROP TABLE should succeed so that users can remove their corrupted table
+        assertQuerySucceeds("DROP TABLE " + tableName);
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertFalse(trinoFileSystem.listFiles(tableLocation).hasNext(), "Table location should not exist");
+    }
+
+    @Test
+    public void testDropCorruptedTableWithHiveRedirection()
+            throws Exception
+    {
+        String hiveRedirectionCatalog = "hive_with_redirections";
+        String icebergCatalog = "iceberg_test";
+        String schema = "default";
+        String tableName = "test_drop_corrupted_table_with_hive_redirection_" + randomNameSuffix();
+        String hiveTableName = "%s.%s.%s".formatted(hiveRedirectionCatalog, schema, tableName);
+        String icebergTableName = "%s.%s.%s".formatted(icebergCatalog, schema, tableName);
+
+        File dataDirectory = Files.createTempDirectory("test_corrupted_iceberg_table").toFile();
+        dataDirectory.deleteOnExit();
+
+        Session icebergSession = testSessionBuilder()
+                .setCatalog(icebergCatalog)
+                .setSchema(schema)
+                .build();
+
+        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession)
+                .build();
+        queryRunner.installPlugin(new IcebergPlugin());
+        queryRunner.createCatalog(
+                icebergCatalog,
+                "iceberg",
+                ImmutableMap.of(
+                        "iceberg.catalog.type", "TESTING_FILE_METASTORE",
+                        "hive.metastore.catalog.dir", dataDirectory.getPath()));
+
+        queryRunner.installPlugin(new TestingHivePlugin(createTestingFileHiveMetastore(dataDirectory)));
+        queryRunner.createCatalog(
+                hiveRedirectionCatalog,
+                "hive",
+                ImmutableMap.of("hive.iceberg-catalog-name", icebergCatalog));
+
+        queryRunner.execute("CREATE SCHEMA " + schema);
+        queryRunner.execute("CREATE TABLE " + icebergTableName + " (id INT, country VARCHAR, independence ROW(month VARCHAR, year INT))");
+        queryRunner.execute("INSERT INTO " + icebergTableName + " VALUES (1, 'INDIA', ROW ('Aug', 1947)), (2, 'POLAND', ROW ('Nov', 1918)), (3, 'USA', ROW ('Jul', 1776))");
+
+        assertThat(queryRunner.execute("TABLE " + hiveTableName))
+                .containsAll(queryRunner.execute("TABLE " + icebergTableName));
+
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(SESSION);
+        Location tableLocation = Location.of((String) queryRunner.execute("SELECT DISTINCT regexp_replace(\"$path\", '/[^/]*/[^/]*$', '') FROM " + tableName).getOnlyValue());
+        Location metadataLocation = tableLocation.appendPath("metadata");
+
+        // break the table by deleting all metadata files
+        trinoFileSystem.deleteDirectory(metadataLocation);
+        assertFalse(trinoFileSystem.listFiles(metadataLocation).hasNext(), "Metadata location should not exist");
+
+        // DROP TABLE should succeed using hive redirection
+        queryRunner.execute("DROP TABLE " + hiveTableName);
+        assertFalse(queryRunner.tableExists(getSession(), icebergTableName));
+        assertFalse(trinoFileSystem.listFiles(tableLocation).hasNext(), "Table location should not exist");
+    }
+
     @Override
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
@@ -6742,9 +6977,9 @@ public abstract class BaseIcebergConnectorTest
     {
         TrinoFileSystem fileSystem = fileSystemFactory.create(SESSION);
         ImmutableList.Builder<String> files = ImmutableList.builder();
-        FileIterator listing = fileSystem.listFiles(directory);
+        FileIterator listing = fileSystem.listFiles(Location.of(directory));
         while (listing.hasNext()) {
-            String location = listing.next().location();
+            String location = listing.next().location().toString();
             if (location.matches(".*/\\..*\\.crc")) {
                 continue;
             }
@@ -6757,14 +6992,14 @@ public abstract class BaseIcebergConnectorTest
             throws IOException
     {
         TrinoFileSystem fileSystem = fileSystemFactory.create(SESSION);
-        return fileSystem.newInputFile(location).length();
+        return fileSystem.newInputFile(Location.of(location)).length();
     }
 
     protected void createFile(String location)
             throws IOException
     {
         TrinoFileSystem fileSystem = fileSystemFactory.create(SESSION);
-        fileSystem.newOutputFile(location).create().close();
+        fileSystem.newOutputFile(Location.of(location)).create().close();
     }
 
     private List<Long> getSnapshotIds(String tableName)

@@ -2,9 +2,9 @@
 
 ## General
 
-* Add [recursive member access](json_descendant_member_accessor) to the
+* Add [recursive member access](json-descendant-member-accessor) to the
   [JSON path language](json-path-language). ({issue}`16854`)
-* Add the [`sequence()`](built_in_table_functions) table function. ({issue}`16716`)
+* Add the [`sequence()`](built-in-table-functions) table function. ({issue}`16716`)
 * Add support for progress estimates when
   [fault-tolerant execution](/admin/fault-tolerant-execution) is enabled. ({issue}`13072`)
 * Add support for `CUBE` and `ROLLUP` with composite sets. ({issue}`16981`)
@@ -20,10 +20,11 @@
 
 ## Security
 
-* Disallow writing system information with the `default` system access control.
-  System information writes can be re-enabled by setting the
-  `access-control.name` configuration property to `allow-all`, or by configuring
-  [system information rules](system-file-auth-system_information). ({issue}`17105`)
+* Disallow [graceful shutdown](/admin/graceful-shutdown) with the `default`
+  [system access control](/security/built-in-system-access-control). Shutdowns
+  can be re-enabled by using the `allow-all` system access control, or by
+  configuring [system information rules](system-file-auth-system-information)
+  with the `file` system access control. ({issue}`17105`)
 
 ## Delta Lake connector
 
