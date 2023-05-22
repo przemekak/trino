@@ -11,16 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-FROM azul/prime:latest AS builder
-
-RUN \
-    set -xeu && \
-    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
-    echo 'Acquire::http::Timeout "15";' > /etc/apt/apt.conf.d/80-timeouts && \
-    apt-get update -q && \
-    apt-get install -y -q git gcc make && \
-    git clone https://github.com/airlift/jvmkill /tmp/jvmkill && \
-    make -C /tmp/jvmkill
+FROM ghcr.io/airlift/jvmkill:latest AS jvmkill
 
 FROM azul/prime:latest
 
