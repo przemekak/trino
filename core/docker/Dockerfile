@@ -13,7 +13,7 @@
 #
 FROM ghcr.io/airlift/jvmkill:latest AS jvmkill
 
-FROM azul/prime:latest
+FROM azul/prime:17.0.7-7-23.05.0.0-arm64
 
 RUN \
     set -xeu && \
