@@ -23,6 +23,7 @@ import io.trino.Session;
 import io.trino.execution.QueryManager;
 import io.trino.operator.OperatorStats;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
+import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.plugin.hive.TestingHivePlugin;
 import io.trino.plugin.hive.containers.HiveHadoop;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
@@ -44,7 +45,6 @@ import org.testng.SkipException;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -53,14 +53,17 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.Verify.verify;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.collect.Sets.union;
 import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
+import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
+import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDockerizedDeltaLakeQueryRunner;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.EXTENDED_STATISTICS_COLLECT_ON_WRITE;
+import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.getConnectorService;
+import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.getTableActiveFiles;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.DELETE_TABLE;
@@ -121,14 +124,16 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
 
     protected HiveMinioDataLake hiveMinioDataLake;
     private HiveMetastore metastore;
+    private TransactionLogAccess transactionLogAccess;
 
     protected void environmentSetup() {}
 
     protected abstract HiveMinioDataLake createHiveMinioDataLake()
             throws Exception;
 
-    protected abstract QueryRunner createDeltaLakeQueryRunner(Map<String, String> connectorProperties)
-            throws Exception;
+    protected abstract Map<String, String> hiveStorageConfiguration();
+
+    protected abstract Map<String, String> deltaStorageConfiguration();
 
     protected abstract void registerTableFromResources(String table, String resourcePath, QueryRunner queryRunner);
 
@@ -150,43 +155,75 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                         .metastoreClient(hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
                         .build());
 
-        QueryRunner queryRunner = createDeltaLakeQueryRunner(
+        DistributedQueryRunner queryRunner = createDeltaLakeQueryRunner();
+        try {
+            this.transactionLogAccess = getConnectorService(queryRunner, TransactionLogAccess.class);
+
+            queryRunner.execute(format("CREATE SCHEMA %s WITH (location = '%s')", SCHEMA, getLocationForTable(bucketName, SCHEMA)));
+
+            REQUIRED_TPCH_TABLES.forEach(table -> queryRunner.execute(format(
+                    "CREATE TABLE %s WITH (location = '%s') AS SELECT * FROM tpch.tiny.%1$s",
+                    table.getTableName(),
+                    getLocationForTable(bucketName, table.getTableName()))));
+
+            /* Data (across 2 files) generated using:
+             * INSERT INTO foo VALUES
+             *   (1, 100, 'data1'),
+             *   (2, 200, 'data2')
+             *
+             * Data (across 2 files) generated using:
+             * INSERT INTO bar VALUES
+             *   (100, 'data100'),
+             *   (200, 'data200')
+             *
+             * INSERT INTO old_dates
+             * VALUES (DATE '0100-01-01', 1), (DATE '1582-10-15', 2), (DATE '1960-01-01', 3), (DATE '2020-01-01', 4)
+             *
+             * INSERT INTO test_timestamps VALUES
+             * (TIMESTAMP '0100-01-01 01:02:03', 1), (TIMESTAMP '1582-10-15 01:02:03', 2), (TIMESTAMP '1960-01-01 01:02:03', 3), (TIMESTAMP '2020-01-01 01:02:03', 4);
+             */
+            NON_TPCH_TABLES.forEach(table -> {
+                String resourcePath = "databricks/" + table;
+                registerTableFromResources(table, resourcePath, queryRunner);
+            });
+
+            queryRunner.installPlugin(new TestingHivePlugin());
+
+            queryRunner.createCatalog(
+                    "hive",
+                    "hive",
+                    ImmutableMap.<String, String>builder()
+                            .put("hive.metastore.uri", "thrift://" + hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
+                            .put("hive.allow-drop-table", "true")
+                            .putAll(hiveStorageConfiguration())
+                            .buildOrThrow());
+
+            return queryRunner;
+        }
+        catch (Throwable e) {
+            closeAllSuppress(e, queryRunner);
+            throw e;
+        }
+    }
+
+    private DistributedQueryRunner createDeltaLakeQueryRunner()
+            throws Exception
+    {
+        return createDockerizedDeltaLakeQueryRunner(
+                DELTA_CATALOG,
+                SCHEMA,
+                Map.of(),
+                Map.of(),
                 ImmutableMap.<String, String>builder()
                         .put("delta.metadata.cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("delta.metadata.live-files.cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("hive.metastore-cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("delta.register-table-procedure.enabled", "true")
-                        .buildOrThrow());
-
-        queryRunner.execute(format("CREATE SCHEMA %s WITH (location = '%s')", SCHEMA, getLocationForTable(bucketName, SCHEMA)));
-
-        REQUIRED_TPCH_TABLES.forEach(table -> queryRunner.execute(format(
-                "CREATE TABLE %s WITH (location = '%s') AS SELECT * FROM tpch.tiny.%1$s",
-                table.getTableName(),
-                getLocationForTable(bucketName, table.getTableName()))));
-
-        /* Data (across 2 files) generated using:
-         * INSERT INTO foo VALUES
-         *   (1, 100, 'data1'),
-         *   (2, 200, 'data2')
-         *
-         * Data (across 2 files) generated using:
-         * INSERT INTO bar VALUES
-         *   (100, 'data100'),
-         *   (200, 'data200')
-         *
-         * INSERT INTO old_dates
-         * VALUES (DATE '0100-01-01', 1), (DATE '1582-10-15', 2), (DATE '1960-01-01', 3), (DATE '2020-01-01', 4)
-         *
-         * INSERT INTO test_timestamps VALUES
-         * (TIMESTAMP '0100-01-01 01:02:03', 1), (TIMESTAMP '1582-10-15 01:02:03', 2), (TIMESTAMP '1960-01-01 01:02:03', 3), (TIMESTAMP '2020-01-01 01:02:03', 4);
-         */
-        NON_TPCH_TABLES.forEach(table -> {
-            String resourcePath = "databricks/" + table;
-            registerTableFromResources(table, resourcePath, queryRunner);
-        });
-
-        return queryRunner;
+                        .put("hive.metastore-timeout", "1m") // read timed out sometimes happens with the default timeout
+                        .putAll(deltaStorageConfiguration())
+                        .buildOrThrow(),
+                hiveMinioDataLake.getHiveHadoop(),
+                queryRunner -> {});
     }
 
     @SuppressWarnings("DuplicateBranchesInSwitch")
@@ -357,13 +394,6 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     {
         DistributedQueryRunner queryRunner = (DistributedQueryRunner) getQueryRunner();
 
-        queryRunner.installPlugin(new TestingHivePlugin());
-        queryRunner.createCatalog(
-                "hive",
-                "hive",
-                ImmutableMap.of(
-                        "hive.metastore.uri", "thrift://" + hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint(),
-                        "hive.allow-drop-table", "true"));
         String hiveTableName = "foo_hive";
         queryRunner.execute(
                 format("CREATE TABLE hive.%s.%s (foo_id bigint, bar_id bigint, data varchar) WITH (format = 'PARQUET', external_location = '%s')",
@@ -940,18 +970,21 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     {
         assertQuery("SELECT count(*) FROM json_stats_on_row_type", "VALUES 2");
         String transactionLogDirectory = "json_stats_on_row_type/_delta_log";
-        String newTransactionFile = getLocationForTable(bucketName, "json_stats_on_row_type") + "/_delta_log/00000000000000000004.json";
-        String newCheckpointFile = getLocationForTable(bucketName, "json_stats_on_row_type") + "/_delta_log/00000000000000000004.checkpoint.parquet";
+        String tableLocation = getLocationForTable(bucketName, "json_stats_on_row_type");
+        String newTransactionFile = tableLocation + "/_delta_log/00000000000000000004.json";
+        String newCheckpointFile = tableLocation + "/_delta_log/00000000000000000004.checkpoint.parquet";
         assertThat(getTableFiles(transactionLogDirectory))
                 .doesNotContain(newTransactionFile, newCheckpointFile);
 
         assertUpdate("INSERT INTO json_stats_on_row_type SELECT CAST(row(3) AS row(x bigint)), CAST(row(row('test insert')) AS row(y row(nested varchar)))", 1);
         assertThat(getTableFiles(transactionLogDirectory))
                 .contains(newTransactionFile, newCheckpointFile);
-        assertThat(getAddFileEntries("json_stats_on_row_type")).hasSize(3);
 
-        // The first two entries created by Databricks have column stats. The last one doesn't have column stats because the connector doesn't support collecting it on row columns.
-        List<AddFileEntry> addFileEntries = getAddFileEntries("json_stats_on_row_type").stream().sorted(comparing(AddFileEntry::getModificationTime)).collect(toImmutableList());
+        // The first two entries created by Databricks have column stats.
+        // The last one doesn't have column stats because the connector doesn't support collecting it on row columns.
+        List<AddFileEntry> addFileEntries = getTableActiveFiles(transactionLogAccess, tableLocation).stream()
+                .sorted(comparing(AddFileEntry::getModificationTime))
+                .toList();
         assertThat(addFileEntries).hasSize(3);
         assertJsonStatistics(
                 addFileEntries.get(0),
@@ -974,15 +1007,11 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                 "{\"numRecords\":1,\"minValues\":{},\"maxValues\":{},\"nullCount\":{}}");
     }
 
-    private List<AddFileEntry> getAddFileEntries(String tableName)
-            throws IOException
+    private static void assertJsonStatistics(AddFileEntry addFileEntry, @Language("JSON") String jsonStatistics)
     {
-        return TestingDeltaLakeUtils.getAddFileEntries(getLocationForTable(bucketName, tableName));
-    }
-
-    private void assertJsonStatistics(AddFileEntry addFileEntry, @Language("JSON") String jsonStatistics)
-    {
-        assertEquals(addFileEntry.getStatsString().orElseThrow(), jsonStatistics);
+        assertThat(addFileEntry.getStatsString().orElseThrow(() ->
+                new AssertionError("statsString is empty: " + addFileEntry)))
+                .isEqualTo(jsonStatistics);
     }
 
     @Test
@@ -1380,7 +1409,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
 
         MaterializedResult expectedDataAfterChange;
         String newLocation;
-        try (QueryRunner independentQueryRunner = createDeltaLakeQueryRunner(Map.of())) {
+        try (QueryRunner independentQueryRunner = createDeltaLakeQueryRunner()) {
             // Change table's location without main Delta Lake connector (main query runner) knowing about this
             newLocation = getLocationForTable(bucketName, "test_table_location_changed_new_" + randomNameSuffix());
 

@@ -15,6 +15,7 @@ package io.trino.plugin.google.sheets;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Inject;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -25,9 +26,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.TableFunctionApplicationResult;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
-
-import javax.inject.Inject;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 
 import java.util.List;
 import java.util.Map;

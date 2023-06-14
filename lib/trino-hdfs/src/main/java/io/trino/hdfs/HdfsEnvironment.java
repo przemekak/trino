@@ -14,6 +14,7 @@
 package io.trino.hdfs;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.opentelemetry.api.OpenTelemetry;
 import io.trino.hadoop.HadoopNative;
@@ -21,14 +22,12 @@ import io.trino.hdfs.authentication.GenericExceptionAction;
 import io.trino.hdfs.authentication.HdfsAuthentication;
 import io.trino.spi.Plugin;
 import io.trino.spi.security.ConnectorIdentity;
+import jakarta.annotation.PreDestroy;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystemManager;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.lang.reflect.Field;

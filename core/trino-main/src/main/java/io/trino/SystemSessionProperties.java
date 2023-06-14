@@ -14,6 +14,7 @@
 package io.trino;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.execution.DynamicFilterConfig;
@@ -29,8 +30,6 @@ import io.trino.sql.planner.OptimizerConfig;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy;
 import io.trino.sql.planner.OptimizerConfig.MarkDistinctStrategy;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
@@ -259,7 +258,7 @@ public final class SystemSessionProperties
                 booleanProperty(
                         DETERMINE_PARTITION_COUNT_FOR_WRITE_ENABLED,
                         "Determine the number of partitions based on amount of data read and processed by the query for write queries",
-                        false,
+                        queryManagerConfig.isDeterminePartitionCountForWriteEnabled(),
                         false),
                 integerProperty(
                         MAX_HASH_PARTITION_COUNT,

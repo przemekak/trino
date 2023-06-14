@@ -134,6 +134,7 @@ import static io.trino.SystemSessionProperties.getTaskRetryAttemptsPerTask;
 import static io.trino.execution.BasicStageStats.aggregateBasicStageStats;
 import static io.trino.execution.StageState.ABORTED;
 import static io.trino.execution.StageState.PLANNED;
+import static io.trino.execution.resourcegroups.IndexedPriorityQueue.PriorityOrdering.LOW_TO_HIGH;
 import static io.trino.execution.scheduler.ErrorCodes.isOutOfMemoryError;
 import static io.trino.execution.scheduler.Exchanges.getAllSourceHandles;
 import static io.trino.failuredetector.FailureDetector.State.GONE;
@@ -1130,15 +1131,16 @@ public class EventDrivenFaultTolerantQueryScheduler
             StageExecution stageExecution = getStageExecution(event.getStageId());
             AssignmentResult assignment = event.getAssignmentResult();
             for (Partition partition : assignment.partitionsAdded()) {
-                Optional<PrioritizedScheduledTask> scheduledTask = stageExecution.addPartition(partition.partitionId(), partition.nodeRequirements());
-                scheduledTask.ifPresent(schedulingQueue::addOrUpdate);
+                stageExecution.addPartition(partition.partitionId(), partition.nodeRequirements());
             }
             for (PartitionUpdate partitionUpdate : assignment.partitionUpdates()) {
-                stageExecution.updatePartition(
+                Optional<PrioritizedScheduledTask> scheduledTask = stageExecution.updatePartition(
                         partitionUpdate.partitionId(),
                         partitionUpdate.planNodeId(),
+                        partitionUpdate.readyForScheduling(),
                         partitionUpdate.splits(),
                         partitionUpdate.noMoreSplits());
+                scheduledTask.ifPresent(schedulingQueue::addOrUpdate);
             }
             assignment.sealedPartitions().forEach(partitionId -> {
                 Optional<PrioritizedScheduledTask> scheduledTask = stageExecution.sealPartition(partitionId);
@@ -1299,10 +1301,10 @@ public class EventDrivenFaultTolerantQueryScheduler
             return exchangeClosed;
         }
 
-        public Optional<PrioritizedScheduledTask> addPartition(int partitionId, NodeRequirements nodeRequirements)
+        public void addPartition(int partitionId, NodeRequirements nodeRequirements)
         {
             if (getState().isDone()) {
-                return Optional.empty();
+                return;
             }
 
             ExchangeSinkHandle exchangeSinkHandle = exchange.addSink(partitionId);
@@ -1322,18 +1324,28 @@ public class EventDrivenFaultTolerantQueryScheduler
             checkState(partitions.putIfAbsent(partitionId, partition) == null, "partition with id %s already exist in stage %s", partitionId, stage.getStageId());
             getSourceOutputSelectors().forEach((partition::updateExchangeSourceOutputSelector));
             remainingPartitions.add(partitionId);
-
-            return Optional.of(PrioritizedScheduledTask.createSpeculative(stage.getStageId(), partitionId, schedulingPriority));
         }
 
-        public void updatePartition(int partitionId, PlanNodeId planNodeId, List<Split> splits, boolean noMoreSplits)
+        public Optional<PrioritizedScheduledTask> updatePartition(
+                int partitionId,
+                PlanNodeId planNodeId,
+                boolean readyForScheduling,
+                List<Split> splits,
+                boolean noMoreSplits)
         {
             if (getState().isDone()) {
-                return;
+                return Optional.empty();
             }
 
             StagePartition partition = getStagePartition(partitionId);
             partition.addSplits(planNodeId, splits, noMoreSplits);
+            if (readyForScheduling && !partition.isTaskScheduled()) {
+                partition.setTaskScheduled(true);
+                return Optional.of(PrioritizedScheduledTask.createSpeculative(stage.getStageId(), partitionId, schedulingPriority));
+            }
+            else {
+                return Optional.empty();
+            }
         }
 
         public Optional<PrioritizedScheduledTask> sealPartition(int partitionId)
@@ -1759,6 +1771,7 @@ public class EventDrivenFaultTolerantQueryScheduler
         private final Set<TaskId> runningTasks = new HashSet<>();
         private final Set<PlanNodeId> finalSelectors = new HashSet<>();
         private final Set<PlanNodeId> noMoreSplits = new HashSet<>();
+        private boolean taskScheduled;
         private boolean finished;
 
         public StagePartition(
@@ -1826,6 +1839,12 @@ public class EventDrivenFaultTolerantQueryScheduler
             // a task may finish before task descriptor is sealed
             if (!finished) {
                 taskDescriptorStorage.put(stageId, taskDescriptor);
+
+                // update speculative flag for running tasks
+                for (TaskId runningTaskId : runningTasks) {
+                    RemoteTask runningTask = tasks.get(runningTaskId);
+                    runningTask.setSpeculative(false);
+                }
             }
         }
 
@@ -1950,6 +1969,17 @@ public class EventDrivenFaultTolerantQueryScheduler
             return !runningTasks.isEmpty();
         }
 
+        public boolean isTaskScheduled()
+        {
+            return taskScheduled;
+        }
+
+        public void setTaskScheduled(boolean taskScheduled)
+        {
+            checkArgument(taskScheduled, "taskScheduled must be true");
+            this.taskScheduled = taskScheduled;
+        }
+
         public boolean isFinished()
         {
             return finished;
@@ -2065,7 +2095,7 @@ public class EventDrivenFaultTolerantQueryScheduler
 
     private static class SchedulingQueue
     {
-        private final IndexedPriorityQueue<ScheduledTask> queue = new IndexedPriorityQueue<>();
+        private final IndexedPriorityQueue<ScheduledTask> queue = new IndexedPriorityQueue<>(LOW_TO_HIGH);
         private int nonSpeculativeTaskCount;
 
         public boolean isEmpty()
@@ -2093,8 +2123,7 @@ public class EventDrivenFaultTolerantQueryScheduler
         {
             IndexedPriorityQueue.Prioritized<ScheduledTask> task = queue.peekPrioritized();
             checkState(task != null, "queue is empty");
-            // negate priority to reverse operation we do in addOrUpdate
-            return new PrioritizedScheduledTask(task.getValue(), toIntExact(-task.getPriority()));
+            return getPrioritizedTask(task);
         }
 
         public void addOrUpdate(PrioritizedScheduledTask prioritizedTask)
@@ -2110,14 +2139,12 @@ public class EventDrivenFaultTolerantQueryScheduler
                 nonSpeculativeTaskCount++;
             }
 
-            // using negative priority here as will return entries with the lowest priority first and here we use bigger number for tasks with lower priority
-            queue.addOrUpdate(prioritizedTask.task(), -prioritizedTask.priority());
+            queue.addOrUpdate(prioritizedTask.task(), prioritizedTask.priority());
         }
 
         private static PrioritizedScheduledTask getPrioritizedTask(IndexedPriorityQueue.Prioritized<ScheduledTask> task)
         {
-            // negate priority to reverse operation we do in addOrUpdate
-            return new PrioritizedScheduledTask(task.getValue(), toIntExact(-task.getPriority()));
+            return new PrioritizedScheduledTask(task.getValue(), toIntExact(task.getPriority()));
         }
     }
 

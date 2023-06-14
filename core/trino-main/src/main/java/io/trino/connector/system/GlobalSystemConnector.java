@@ -14,6 +14,7 @@
 package io.trino.connector.system;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.trino.operator.table.Sequence.SequenceFunctionHandle;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogHandle.CatalogVersion;
@@ -23,14 +24,12 @@ import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.SystemTable;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.spi.procedure.Procedure;
-import io.trino.spi.ptf.ConnectorTableFunction;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
 import io.trino.spi.transaction.IsolationLevel;
 import io.trino.transaction.InternalConnector;
 import io.trino.transaction.TransactionId;
-
-import javax.inject.Inject;
 
 import java.util.Set;
 

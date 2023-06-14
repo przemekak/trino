@@ -22,6 +22,7 @@ import com.google.common.collect.SetMultimap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.stats.TDigest;
 import io.airlift.units.DataSize;
@@ -36,12 +37,11 @@ import io.trino.metadata.InternalNodeManager.NodesSnapshot;
 import io.trino.spi.ErrorCode;
 import io.trino.spi.TrinoException;
 import io.trino.spi.memory.MemoryPoolInfo;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.assertj.core.util.VisibleForTesting;
 
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
 import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.time.Duration;
 import java.util.Comparator;

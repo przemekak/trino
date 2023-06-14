@@ -64,6 +64,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.inject.Inject;
 import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
 import io.airlift.concurrent.MoreFutures;
@@ -113,9 +114,9 @@ import org.weakref.jmx.Flatten;
 import org.weakref.jmx.Managed;
 
 import javax.annotation.Nullable;
-import javax.inject.Inject;
 
 import java.time.Duration;
+import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -153,6 +154,7 @@ import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter
 import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.mappedCopy;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getHiveBasicStatistics;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
+import static io.trino.plugin.hive.util.HiveUtil.escapeSchemaName;
 import static io.trino.plugin.hive.util.HiveUtil.toPartitionValues;
 import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
@@ -318,10 +320,24 @@ public class GlueHiveMetastore
     @Override
     public Map<String, PartitionStatistics> getPartitionStatistics(Table table, List<Partition> partitions)
     {
-        return columnStatisticsProvider.getPartitionColumnStatistics(partitions).entrySet().stream()
+        Map<String, PartitionStatistics> partitionBasicStatistics = columnStatisticsProvider.getPartitionColumnStatistics(partitions).entrySet().stream()
                 .collect(toImmutableMap(
                         entry -> makePartitionName(table, entry.getKey()),
                         entry -> new PartitionStatistics(getHiveBasicStatistics(entry.getKey().getParameters()), entry.getValue())));
+
+        long tableRowCount = partitionBasicStatistics.values().stream()
+                .mapToLong(partitionStatistics -> partitionStatistics.getBasicStatistics().getRowCount().orElse(0))
+                .sum();
+        if (!partitionBasicStatistics.isEmpty() && tableRowCount == 0) {
+            // When the table has partitions, but row count statistics are set to zero, we treat this case as empty
+            // statistics to avoid underestimation in the CBO. This scenario may be caused when other engines are
+            // used to ingest data into partitioned hive tables.
+            partitionBasicStatistics = partitionBasicStatistics.keySet().stream()
+                    .map(key -> new SimpleEntry<>(key, PartitionStatistics.empty()))
+                    .collect(toImmutableMap(SimpleEntry::getKey, SimpleEntry::getValue));
+        }
+
+        return partitionBasicStatistics;
     }
 
     @Override
@@ -368,12 +384,12 @@ public class GlueHiveMetastore
                 .collect(toImmutableMap(HiveUtil::toPartitionValues, identity()));
 
         List<Partition> partitions = batchGetPartition(table, ImmutableList.copyOf(updates.keySet()));
-        Map<Partition, Map<String, HiveColumnStatistics>> statisticsPerPartition = columnStatisticsProvider.getPartitionColumnStatistics(partitions);
+        Map<String, PartitionStatistics> partitionsStatistics = getPartitionStatistics(table, partitions);
 
-        statisticsPerPartition.forEach((partition, columnStatistics) -> {
+        partitions.forEach(partition -> {
             Function<PartitionStatistics, PartitionStatistics> update = updates.get(partitionValuesToName.get(partition.getValues()));
 
-            PartitionStatistics currentStatistics = new PartitionStatistics(getHiveBasicStatistics(partition.getParameters()), columnStatistics);
+            PartitionStatistics currentStatistics = partitionsStatistics.get(makePartitionName(table, partition));
             PartitionStatistics updatedStatistics = update.apply(currentStatistics);
 
             Map<String, String> updatedStatisticsParameters = updateStatisticsParameters(partition.getParameters(), updatedStatistics.getBasicStatistics());
@@ -493,7 +509,7 @@ public class GlueHiveMetastore
     public void createDatabase(Database database)
     {
         if (database.getLocation().isEmpty() && defaultDir.isPresent()) {
-            String databaseLocation = new Path(defaultDir.get(), database.getDatabaseName()).toString();
+            String databaseLocation = new Path(defaultDir.get(), escapeSchemaName(database.getDatabaseName())).toString();
             database = Database.builder(database)
                     .setLocation(Optional.of(databaseLocation))
                     .build();

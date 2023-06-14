@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>419-SNAPSHOT</version>
+        <version>420-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -35,6 +35,11 @@
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-filesystem</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-filesystem-manager</artifactId>
         </dependency>
 
         <dependency>
@@ -157,11 +162,6 @@
         <dependency>
             <groupId>dev.failsafe</groupId>
             <artifactId>failsafe</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>javax.inject</groupId>
-            <artifactId>javax.inject</artifactId>
         </dependency>
 
         <dependency>
@@ -496,7 +496,7 @@
         </profile>
 
         <profile>
-	    <!-- Tests which require third party cloud services are separated from the main test profile -->
+            <!-- Tests which require third party cloud services are separated from the main test profile -->
             <id>cloud-tests</id>
             <build>
                 <plugins>

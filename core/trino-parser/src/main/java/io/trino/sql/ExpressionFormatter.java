@@ -312,7 +312,7 @@ public final class ExpressionFormatter
         {
             return literalFormatter
                     .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> Long.toString(node.getValue()));
+                    .orElseGet(node::getValue);
         }
 
         @Override
@@ -1307,6 +1307,10 @@ public final class ExpressionFormatter
         builder.append(formatJsonExpression(pathInvocation.getInputExpression(), Optional.of(pathInvocation.getInputFormat())))
                 .append(", ")
                 .append(formatExpression(pathInvocation.getJsonPath()));
+
+        pathInvocation.getPathName().ifPresent(pathName -> builder
+                .append(" AS ")
+                .append(formatExpression(pathName)));
 
         if (!pathInvocation.getPathParameters().isEmpty()) {
             builder.append(" PASSING ");

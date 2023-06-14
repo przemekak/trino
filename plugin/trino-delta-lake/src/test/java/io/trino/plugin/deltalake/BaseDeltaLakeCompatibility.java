@@ -22,6 +22,8 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
+import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,9 +37,9 @@ public abstract class BaseDeltaLakeCompatibility
     protected final String resourcePath;
     protected HiveMinioDataLake hiveMinioDataLake;
 
-    public BaseDeltaLakeCompatibility(String bucketName, String resourcePath)
+    public BaseDeltaLakeCompatibility(String resourcePath)
     {
-        this.bucketName = requireNonNull(bucketName);
+        this.bucketName = "compatibility-test-queries-" + randomNameSuffix();
         this.resourcePath = requireNonNull(resourcePath);
     }
 
@@ -47,7 +49,7 @@ public abstract class BaseDeltaLakeCompatibility
     {
         hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName));
         hiveMinioDataLake.start();
-        QueryRunner queryRunner = DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner(
+        QueryRunner queryRunner = createS3DeltaLakeQueryRunner(
                 DELTA_CATALOG,
                 SCHEMA,
                 ImmutableMap.of(

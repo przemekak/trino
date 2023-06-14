@@ -14,6 +14,7 @@
 package io.trino.tests.product.launcher.env.environment;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.env.DockerContainer;
 import io.trino.tests.product.launcher.env.Environment;
@@ -25,8 +26,6 @@ import io.trino.tests.product.launcher.env.common.Standard;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
 import io.trino.tests.product.launcher.testcontainers.PortBinder;
 import org.testcontainers.containers.startupcheck.IsRunningStartupCheckStrategy;
-
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -132,6 +131,7 @@ public class EnvSinglenodeDeltaLakeOss
     {
         DockerContainer container = new DockerContainer("ghcr.io/trinodb/testing/spark3-delta:" + hadoopImagesVersion, SPARK_CONTAINER_NAME)
                 .withCopyFileToContainer(forHostPath(configDir.getPath("spark-defaults.conf")), "/spark/conf/spark-defaults.conf")
+                .withCopyFileToContainer(forHostPath(dockerFiles.getDockerFilesHostPath("common/spark/log4j2.properties")), "/spark/conf/log4j2.properties")
                 .withStartupCheckStrategy(new IsRunningStartupCheckStrategy())
                 .waitingFor(forSelectedPorts(SPARK_THRIFT_PORT));
 

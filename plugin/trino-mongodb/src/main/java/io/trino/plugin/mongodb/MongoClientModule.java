@@ -16,6 +16,7 @@ package io.trino.plugin.mongodb;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
+import com.google.inject.Singleton;
 import com.google.inject.multibindings.ProvidesIntoSet;
 import com.mongodb.ConnectionString;
 import com.mongodb.MongoClientSettings;
@@ -23,10 +24,8 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.trino.plugin.mongodb.ptf.Query;
-import io.trino.spi.ptf.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunction;
 import io.trino.spi.type.TypeManager;
-
-import javax.inject.Singleton;
 
 import java.util.Set;
 

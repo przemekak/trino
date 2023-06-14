@@ -112,6 +112,8 @@ import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getHiveB
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
 import static io.trino.plugin.hive.util.HiveUtil.DELTA_LAKE_PROVIDER;
 import static io.trino.plugin.hive.util.HiveUtil.SPARK_TABLE_PROVIDER_KEY;
+import static io.trino.plugin.hive.util.HiveUtil.escapeSchemaName;
+import static io.trino.plugin.hive.util.HiveUtil.escapeTableName;
 import static io.trino.plugin.hive.util.HiveUtil.isIcebergTable;
 import static io.trino.plugin.hive.util.HiveUtil.toPartitionValues;
 import static io.trino.plugin.hive.util.HiveUtil.unescapePathName;
@@ -140,12 +142,13 @@ public class FileHiveMetastore
     private static final Set<String> ADMIN_USERS = ImmutableSet.of("admin", "hive", "hdfs");
 
     // 128 is equals to the max database name length of Thrift Hive metastore
-    private static final int MAX_DATABASE_NAME_LENGTH = 128;
+    private static final int MAX_NAME_LENGTH = 128;
 
     private final String currentVersion;
     private final VersionCompatibility versionCompatibility;
     private final HdfsEnvironment hdfsEnvironment;
     private final Path catalogDirectory;
+    private final boolean disableLocationChecks;
     private final HdfsContext hdfsContext;
     private final boolean hideDeltaLakeTables;
     private final FileSystem metadataFileSystem;
@@ -166,6 +169,7 @@ public class FileHiveMetastore
         this.versionCompatibility = requireNonNull(config.getVersionCompatibility(), "config.getVersionCompatibility() is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.catalogDirectory = new Path(requireNonNull(config.getCatalogDirectory(), "catalogDirectory is null"));
+        this.disableLocationChecks = config.isDisableLocationChecks();
         this.hdfsContext = new HdfsContext(ConnectorIdentity.ofUser(config.getMetastoreUser()));
         this.hideDeltaLakeTables = hideDeltaLakeTables;
         try {
@@ -289,8 +293,15 @@ public class FileHiveMetastore
 
     private void verifyDatabaseNameLength(String databaseName)
     {
-        if (databaseName.length() > MAX_DATABASE_NAME_LENGTH) {
-            throw new TrinoException(NOT_SUPPORTED, format("Schema name must be shorter than or equal to '%s' characters but got '%s'", MAX_DATABASE_NAME_LENGTH, databaseName.length()));
+        if (databaseName.length() > MAX_NAME_LENGTH) {
+            throw new TrinoException(NOT_SUPPORTED, format("Schema name must be shorter than or equal to '%s' characters but got '%s'", MAX_NAME_LENGTH, databaseName.length()));
+        }
+    }
+
+    private void verifyTableNameLength(String tableName)
+    {
+        if (tableName.length() > MAX_NAME_LENGTH) {
+            throw new TrinoException(NOT_SUPPORTED, format("Table name must be shorter than or equal to '%s' characters but got '%s'", MAX_NAME_LENGTH, tableName.length()));
         }
     }
 
@@ -312,6 +323,7 @@ public class FileHiveMetastore
     @Override
     public synchronized void createTable(Table table, PrincipalPrivileges principalPrivileges)
     {
+        verifyTableNameLength(table.getTableName());
         verifyDatabaseExists(table.getDatabaseName());
         verifyTableNotExists(table.getDatabaseName(), table.getTableName());
 
@@ -322,7 +334,7 @@ public class FileHiveMetastore
             checkArgument(table.getStorage().getLocation().isEmpty(), "Storage location for view must be empty");
         }
         else if (table.getTableType().equals(MANAGED_TABLE.name())) {
-            if (!(new Path(table.getStorage().getLocation()).toString().contains(tableMetadataDirectory.toString()))) {
+            if (!disableLocationChecks && !(new Path(table.getStorage().getLocation()).toString().contains(tableMetadataDirectory.toString()))) {
                 throw new TrinoException(HIVE_METASTORE_ERROR, "Table directory must be " + tableMetadataDirectory);
             }
         }
@@ -611,6 +623,7 @@ public class FileHiveMetastore
         getRequiredDatabase(newDatabaseName);
 
         // verify new table does not exist
+        verifyTableNameLength(newTableName);
         verifyTableNotExists(newDatabaseName, newTableName);
 
         Path oldPath = getTableMetadataDirectory(databaseName, tableName);
@@ -1401,7 +1414,7 @@ public class FileHiveMetastore
 
     private Path getDatabaseMetadataDirectory(String databaseName)
     {
-        return new Path(catalogDirectory, databaseName);
+        return new Path(catalogDirectory, escapeSchemaName(databaseName));
     }
 
     private Path getTableMetadataDirectory(Table table)
@@ -1411,7 +1424,7 @@ public class FileHiveMetastore
 
     private Path getTableMetadataDirectory(String databaseName, String tableName)
     {
-        return new Path(getDatabaseMetadataDirectory(databaseName), tableName);
+        return new Path(getDatabaseMetadataDirectory(databaseName), escapeTableName(tableName));
     }
 
     private Path getPartitionMetadataDirectory(Table table, List<String> values)

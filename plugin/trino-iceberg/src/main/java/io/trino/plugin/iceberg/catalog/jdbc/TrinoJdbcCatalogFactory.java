@@ -14,6 +14,7 @@
 package io.trino.plugin.iceberg.catalog.jdbc;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Inject;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.iceberg.IcebergConfig;
@@ -23,11 +24,9 @@ import io.trino.plugin.iceberg.catalog.TrinoCatalogFactory;
 import io.trino.plugin.iceberg.fileio.ForwardingFileIo;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.TypeManager;
+import jakarta.annotation.PreDestroy;
 import org.apache.iceberg.jdbc.JdbcCatalog;
 import org.apache.iceberg.jdbc.JdbcClientPool;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
 
 import java.util.Map;
 

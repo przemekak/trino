@@ -478,31 +478,6 @@ Flush metadata cache
   Flushes metadata cache entries of a specific table.
   Procedure requires passing named parameters.
 
-.. _delta-lake-write-support:
-
-Updating data
-"""""""""""""
-
-You can use the connector to :doc:`/sql/insert`, :doc:`/sql/delete`,
-:doc:`/sql/update`, and :doc:`/sql/merge` data in Delta Lake tables.
-
-Write operations are supported for tables stored on the following systems:
-
-* Azure ADLS Gen2, Google Cloud Storage
-
-  Writes to the Azure ADLS Gen2 and Google Cloud Storage are
-  enabled by default. Trino detects write collisions on these storage systems
-  when writing from multiple Trino clusters, or from other query engines.
-
-* S3 and S3-compatible storage
-
-  Writes to :doc:`Amazon S3 <hive-s3>` and S3-compatible storage must be enabled
-  with the ``delta.enable-non-concurrent-writes`` property. Writes to S3 can
-  safely be made from multiple Trino clusters; however, write collisions are not
-  detected when writing concurrently from other Delta Lake engines. You need to
-  make sure that no concurrent data modifications are run to avoid data
-  corruption.
-
 .. _delta-lake-vacuum:
 
 ``VACUUM``
@@ -530,6 +505,31 @@ The ``delta.vacuum.min-retention`` configuration property provides a safety
 measure to ensure that files are retained as expected. The minimum value for
 this property is ``0s``. There is a minimum retention session property as well,
 ``vacuum_min_retention``.
+
+.. _delta-lake-write-support:
+
+Updating data
+^^^^^^^^^^^^^
+
+You can use the connector to :doc:`/sql/insert`, :doc:`/sql/delete`,
+:doc:`/sql/update`, and :doc:`/sql/merge` data in Delta Lake tables.
+
+Write operations are supported for tables stored on the following systems:
+
+* Azure ADLS Gen2, Google Cloud Storage
+
+  Writes to the Azure ADLS Gen2 and Google Cloud Storage are
+  enabled by default. Trino detects write collisions on these storage systems
+  when writing from multiple Trino clusters, or from other query engines.
+
+* S3 and S3-compatible storage
+
+  Writes to :doc:`Amazon S3 <hive-s3>` and S3-compatible storage must be enabled
+  with the ``delta.enable-non-concurrent-writes`` property. Writes to S3 can
+  safely be made from multiple Trino clusters; however, write collisions are not
+  detected when writing concurrently from other Delta Lake engines. You need to
+  make sure that no concurrent data modifications are run to avoid data
+  corruption.
 
 .. _delta-lake-data-management:
 
@@ -734,6 +734,154 @@ Fault-tolerant execution support
 The connector supports :doc:`/admin/fault-tolerant-execution` of query
 processing. Read and write operations are both supported with any retry policy.
 
+
+Table functions
+---------------
+
+The connector provides the following table functions:
+
+table_changes
+^^^^^^^^^^^^^
+
+Allows reading Change Data Feed (CDF) entries to expose row-level changes
+between two versions of a Delta Lake table. When the ``change_data_feed_enabled``
+table property is set to ``true`` on a specific Delta Lake table,
+the connector records change events for all data changes on the table.
+This is how these changes can be read:
+
+.. code-block:: sql
+
+    SELECT
+      *
+    FROM
+      TABLE(
+        system.table_changes(
+          schema_name => 'test_schema',
+          table_name => 'tableName',
+          since_version => 0
+        )
+      );
+
+``schema_name`` - type ``VARCHAR``, required, name of the schema for which the function is called
+
+``table_name`` - type ``VARCHAR``, required, name of the table for which the function is called
+
+``since_version`` - type ``BIGINT``, optional, version from which changes are shown, exclusive
+
+In addition to returning the columns present in the table, the function
+returns the following values for each change event:
+
+* ``_change_type``
+    Gives the type of change that occurred. Possible values are ``insert``,
+    ``delete``, ``update_preimage`` and ``update_postimage``.
+
+* ``_commit_version``
+    Shows the table version for which the change occurred.
+
+* ``_commit_timestamp``
+    Represents the timestamp for the commit in which the specified change happened.
+
+This is how it would be normally used:
+
+Create table:
+
+.. code-block:: sql
+
+    CREATE TABLE test_schema.pages (page_url VARCHAR, domain VARCHAR, views INTEGER)
+        WITH (change_data_feed_enabled = true);
+
+Insert data:
+
+.. code-block:: sql
+
+    INSERT INTO test_schema.pages
+        VALUES
+            ('url1', 'domain1', 1),
+            ('url2', 'domain2', 2),
+            ('url3', 'domain1', 3);
+    INSERT INTO test_schema.pages
+        VALUES
+            ('url4', 'domain1', 400),
+            ('url5', 'domain2', 500),
+            ('url6', 'domain3', 2);
+
+Update data:
+
+.. code-block:: sql
+
+    UPDATE test_schema.pages
+        SET domain = 'domain4'
+        WHERE views = 2;
+
+Select changes:
+
+.. code-block:: sql
+
+    SELECT
+      *
+    FROM
+      TABLE(
+        system.table_changes(
+          schema_name => 'test_schema',
+          table_name => 'pages',
+          since_version => 1
+        )
+      )
+    ORDER BY _commit_version ASC;
+
+The preceding sequence of SQL statements returns the following result:
+
+.. code-block:: text
+
+  page_url    |     domain     |    views    |    _change_type     |    _commit_version    |    _commit_timestamp
+  url4        |     domain1    |    400      |    insert           |     2                 |    2023-03-10T21:22:23.000+0000
+  url5        |     domain2    |    500      |    insert           |     2                 |    2023-03-10T21:22:23.000+0000
+  url6        |     domain3    |    2        |    insert           |     2                 |    2023-03-10T21:22:23.000+0000
+  url2        |     domain2    |    2        |    update_preimage  |     3                 |    2023-03-10T22:23:24.000+0000
+  url2        |     domain4    |    2        |    update_postimage |     3                 |    2023-03-10T22:23:24.000+0000
+  url6        |     domain3    |    2        |    update_preimage  |     3                 |    2023-03-10T22:23:24.000+0000
+  url6        |     domain4    |    2        |    update_postimage |     3                 |    2023-03-10T22:23:24.000+0000
+
+The output shows what changes happen in which version.
+For example in version 3 two rows were modified, first one changed from
+``('url2', 'domain2', 2)`` into ``('url2', 'domain4', 2)`` and the second from
+``('url6', 'domain2', 2)`` into ``('url6', 'domain4', 2)``.
+
+If ``since_version`` is not provided the function produces change events
+starting from when the table was created.
+
+.. code-block:: sql
+
+    SELECT
+      *
+    FROM
+      TABLE(
+        system.table_changes(
+          schema_name => 'test_schema',
+          table_name => 'pages'
+        )
+      )
+    ORDER BY _commit_version ASC;
+
+The preceding SQL statement returns the following result:
+
+.. code-block:: text
+
+  page_url    |     domain     |    views    |    _change_type     |    _commit_version    |    _commit_timestamp
+  url1        |     domain1    |    1        |    insert           |     1                 |    2023-03-10T20:21:22.000+0000
+  url2        |     domain2    |    2        |    insert           |     1                 |    2023-03-10T20:21:22.000+0000
+  url3        |     domain1    |    3        |    insert           |     1                 |    2023-03-10T20:21:22.000+0000
+  url4        |     domain1    |    400      |    insert           |     2                 |    2023-03-10T21:22:23.000+0000
+  url5        |     domain2    |    500      |    insert           |     2                 |    2023-03-10T21:22:23.000+0000
+  url6        |     domain3    |    2        |    insert           |     2                 |    2023-03-10T21:22:23.000+0000
+  url2        |     domain2    |    2        |    update_preimage  |     3                 |    2023-03-10T22:23:24.000+0000
+  url2        |     domain4    |    2        |    update_postimage |     3                 |    2023-03-10T22:23:24.000+0000
+  url6        |     domain3    |    2        |    update_preimage  |     3                 |    2023-03-10T22:23:24.000+0000
+  url6        |     domain4    |    2        |    update_postimage |     3                 |    2023-03-10T22:23:24.000+0000
+
+You can see changes that occurred at version 1 as three inserts. They are
+not visible in the previous statement when ``since_version`` value was set to 1.
+
 Performance
 -----------
 
@@ -769,6 +917,13 @@ statistics.
 To collect statistics for a table, execute the following statement::
 
   ANALYZE table_schema.table_name;
+
+To recalculate from scratch the statistics for the table use additional parameter ``mode``:
+
+  ANALYZE table_schema.table_name WITH(mode = 'full_refresh');
+
+There are two modes available ``full_refresh`` and ``incremental``.
+The procedure use ``incremental`` by default.
 
 To gain the most benefit from cost-based optimizations, run periodic ``ANALYZE``
 statements on every large table that is frequently queried.

@@ -27,6 +27,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.SetMultimap;
 import com.google.common.primitives.Ints;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
 import io.trino.Session;
@@ -166,9 +167,9 @@ import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionKind;
 import io.trino.spi.function.WindowFunctionSupplier;
+import io.trino.spi.function.table.TableFunctionProcessorProvider;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.NullableValue;
-import io.trino.spi.ptf.TableFunctionProcessorProvider;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spiller.PartitioningSpillerFactory;
@@ -260,8 +261,6 @@ import io.trino.sql.tree.SortItem.Ordering;
 import io.trino.sql.tree.SymbolReference;
 import io.trino.type.BlockTypeOperators;
 import io.trino.type.FunctionType;
-
-import javax.inject.Inject;
 
 import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;

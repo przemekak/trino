@@ -54,8 +54,10 @@ import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static io.airlift.testing.Assertions.assertGreaterThan;
 import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
+import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.spi.connector.Constraint.alwaysTrue;
 import static io.trino.testing.DataProviders.toDataProvider;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tpch.TpchTable.LINE_ITEM;
 import static io.trino.tpch.TpchTable.ORDERS;
 import static java.lang.String.format;
@@ -65,8 +67,7 @@ import static org.testng.Assert.assertTrue;
 public class TestDeltaLakeDynamicFiltering
         extends AbstractTestQueryFramework
 {
-    private static final String BUCKET_NAME = "delta-lake-test-dynamic-filtering";
-
+    private final String bucketName = "delta-lake-test-dynamic-filtering-" + randomNameSuffix();
     private HiveMinioDataLake hiveMinioDataLake;
 
     @Override
@@ -74,10 +75,10 @@ public class TestDeltaLakeDynamicFiltering
             throws Exception
     {
         verify(new DynamicFilterConfig().isEnableDynamicFiltering(), "this class assumes dynamic filtering is enabled by default");
-        hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(BUCKET_NAME));
+        hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName));
         hiveMinioDataLake.start();
 
-        QueryRunner queryRunner = DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner(
+        QueryRunner queryRunner = createS3DeltaLakeQueryRunner(
                 DELTA_CATALOG,
                 "default",
                 ImmutableMap.of("delta.register-table-procedure.enabled", "true"),
@@ -91,7 +92,7 @@ public class TestDeltaLakeDynamicFiltering
                     DELTA_CATALOG,
                     "default",
                     tableName,
-                    BUCKET_NAME));
+                    bucketName));
         });
         return queryRunner;
     }

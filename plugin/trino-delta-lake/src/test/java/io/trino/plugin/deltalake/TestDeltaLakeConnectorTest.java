@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.execution.QueryInfo;
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
+import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.DataProviders;
 import io.trino.testing.DistributedQueryRunner;
@@ -27,9 +27,12 @@ import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.MaterializedRow;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
+import io.trino.testing.containers.Minio;
+import io.trino.testing.minio.MinioClient;
 import io.trino.testing.sql.TestTable;
 import org.intellij.lang.annotations.Language;
 import org.testng.SkipException;
+import org.testng.annotations.AfterClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -44,6 +47,7 @@ import java.util.stream.IntStream;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Sets.union;
+import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.deltalake.DeltaLakeCdfPageSink.CHANGE_DATA_FOLDER_NAME;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.CHANGE_DATA_FEED_COLUMN_NAMES;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
@@ -52,13 +56,15 @@ import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.MaterializedResult.resultBuilder;
-import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.trino.testing.QueryAssertions.copyTpchTables;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.EXECUTE_FUNCTION;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.SELECT_COLUMN;
 import static io.trino.testing.TestingAccessControlManager.privilege;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_SCHEMA;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.testing.TestingSession.testSessionBuilder;
+import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
+import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,28 +75,58 @@ import static org.testng.Assert.assertFalse;
 public class TestDeltaLakeConnectorTest
         extends BaseConnectorTest
 {
-    private static final String SCHEMA = "test_schema";
-    private static final String BUCKET_NAME = "trino-ci-test";
+    protected static final String SCHEMA = "test_schema";
 
-    protected HiveMinioDataLake hiveMinioDataLake;
+    protected final String bucketName = "trino-ci-test-" + randomNameSuffix();
+    protected MinioClient minioClient;
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(BUCKET_NAME));
-        hiveMinioDataLake.start();
-        QueryRunner queryRunner = DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                SCHEMA,
-                ImmutableMap.of(
-                        "delta.enable-non-concurrent-writes", "true",
-                        "delta.register-table-procedure.enabled", "true"),
-                hiveMinioDataLake.getMinio().getMinioAddress(),
-                hiveMinioDataLake.getHiveHadoop());
-        queryRunner.execute("CREATE SCHEMA " + SCHEMA + " WITH (location = 's3://" + BUCKET_NAME + "/" + SCHEMA + "')");
-        copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, queryRunner.getDefaultSession(), REQUIRED_TPCH_TABLES);
+        Minio minio = closeAfterClass(Minio.builder().build());
+        minio.start();
+        minio.createBucket(bucketName);
+        minioClient = closeAfterClass(minio.createMinioClient());
+
+        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
+                        .setCatalog(DELTA_CATALOG)
+                        .setSchema(SCHEMA)
+                        .build())
+                .build();
+        try {
+            queryRunner.installPlugin(new TpchPlugin());
+            queryRunner.createCatalog("tpch", "tpch");
+
+            queryRunner.installPlugin(new DeltaLakePlugin());
+            queryRunner.createCatalog(DELTA_CATALOG, DeltaLakeConnectorFactory.CONNECTOR_NAME, ImmutableMap.<String, String>builder()
+                    .put("hive.metastore", "file")
+                    .put("hive.metastore.catalog.dir", queryRunner.getCoordinator().getBaseDataDir().resolve("file-metastore").toString())
+                    .put("hive.metastore.disable-location-checks", "true")
+                    .put("hive.s3.aws-access-key", MINIO_ACCESS_KEY)
+                    .put("hive.s3.aws-secret-key", MINIO_SECRET_KEY)
+                    .put("hive.s3.endpoint", minio.getMinioAddress())
+                    .put("hive.s3.path-style-access", "true")
+                    .put("delta.enable-non-concurrent-writes", "true")
+                    .put("delta.register-table-procedure.enabled", "true")
+                    .buildOrThrow());
+
+            queryRunner.execute("CREATE SCHEMA " + SCHEMA + " WITH (location = 's3://" + bucketName + "/" + SCHEMA + "')");
+            queryRunner.execute("CREATE SCHEMA schemawithoutunderscore WITH (location = 's3://" + bucketName + "/schemawithoutunderscore')");
+            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, queryRunner.getDefaultSession(), REQUIRED_TPCH_TABLES);
+        }
+        catch (Throwable e) {
+            closeAllSuppress(e, queryRunner);
+            throw e;
+        }
+
         return queryRunner;
+    }
+
+    @AfterClass(alwaysRun = true)
+    public void tearDown()
+    {
+        minioClient = null; // closed by closeAfterClass
     }
 
     @SuppressWarnings("DuplicateBranchesInSwitch")
@@ -115,9 +151,6 @@ public class TestDeltaLakeConnectorTest
             case SUPPORTS_SET_COLUMN_TYPE:
                 return false;
 
-            case SUPPORTS_COMMENT_ON_VIEW_COLUMN:
-                return false;
-
             case SUPPORTS_CREATE_MATERIALIZED_VIEW:
                 return false;
 
@@ -138,12 +171,7 @@ public class TestDeltaLakeConnectorTest
         assertThat(e)
                 .hasMessage("Failed to write Delta Lake transaction log entry")
                 .cause()
-                .hasMessageMatching(
-                        "Transaction log locked.*" +
-                                "|.*/_delta_log/\\d+.json already exists" +
-                                "|Conflicting concurrent writes found..*" +
-                                "|Multiple live locks found for:.*" +
-                                "|Target file .* was created during locking");
+                .hasMessageMatching(transactionConflictErrors());
     }
 
     @Override
@@ -152,12 +180,7 @@ public class TestDeltaLakeConnectorTest
         assertThat(e)
                 .hasMessage("Failed to write Delta Lake transaction log entry")
                 .cause()
-                .hasMessageMatching(
-                        "Transaction log locked.*" +
-                                "|.*/_delta_log/\\d+.json already exists" +
-                                "|Conflicting concurrent writes found..*" +
-                                "|Multiple live locks found for:.*" +
-                                "|Target file .* was created during locking");
+                .hasMessageMatching(transactionConflictErrors());
     }
 
     @Override
@@ -166,12 +189,17 @@ public class TestDeltaLakeConnectorTest
         assertThat(e)
                 .hasMessageMatching("Unable to add '.*' column for: .*")
                 .cause()
-                .hasMessageMatching(
-                        "Transaction log locked.*" +
-                                "|.*/_delta_log/\\d+.json already exists" +
-                                "|Conflicting concurrent writes found..*" +
-                                "|Multiple live locks found for:.*" +
-                                "|Target file .* was created during locking");
+                .hasMessageMatching(transactionConflictErrors());
+    }
+
+    @Language("RegExp")
+    private static String transactionConflictErrors()
+    {
+        return "Transaction log locked.*" +
+                "|Target file already exists: .*/_delta_log/\\d+.json" +
+                "|Conflicting concurrent writes found\\..*" +
+                "|Multiple live locks found for:.*" +
+                "|Target file was created during locking: .*";
     }
 
     @Override
@@ -248,7 +276,7 @@ public class TestDeltaLakeConnectorTest
     {
         String tableName = "test_null_partitions_" + randomNameSuffix();
         assertUpdate("" +
-                        "CREATE TABLE " + tableName + " (a, b, c) WITH (location = '" + format("s3://%s/%s", BUCKET_NAME, tableName) + "', partitioned_by = ARRAY['c']) " +
+                        "CREATE TABLE " + tableName + " (a, b, c) WITH (location = '" + format("s3://%s/%s", bucketName, tableName) + "', partitioned_by = ARRAY['c']) " +
                         "AS VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (null, null, null), (4, 4, 4)",
                 "VALUES 5");
         assertQuery("SELECT a FROM " + tableName + " WHERE c % 5 = 1", "VALUES (1)");
@@ -262,7 +290,7 @@ public class TestDeltaLakeConnectorTest
                 "CREATE TABLE " + tableName + "(data int, first varchar, second varchar) " +
                 "WITH (" +
                 "partitioned_by = ARRAY['second', 'first'], " +
-                "location = '" + format("s3://%s/%s", BUCKET_NAME, tableName) + "')");
+                "location = '" + format("s3://%s/%s", bucketName, tableName) + "')");
 
         assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'first#1', 'second#1')", 1);
         assertQuery("SELECT * FROM " + tableName, "VALUES (1, 'first#1', 'second#1')");
@@ -285,45 +313,7 @@ public class TestDeltaLakeConnectorTest
                 .isEqualTo(format("CREATE SCHEMA %s.%s\n" +
                         "WITH (\n" +
                         "   location = 's3://%s/test_schema'\n" +
-                        ")", getSession().getCatalog().orElseThrow(), schemaName, BUCKET_NAME));
-    }
-
-    /**
-     * @see io.trino.plugin.deltalake.BaseDeltaLakeConnectorSmokeTest#testRenameExternalTable for more test coverage
-     */
-    @Override
-    public void testRenameTable()
-    {
-        assertThatThrownBy(super::testRenameTable)
-                .hasMessage("Renaming managed tables is not allowed with current metastore configuration")
-                .hasStackTraceContaining("SQL: ALTER TABLE test_rename_");
-    }
-
-    /**
-     * @see io.trino.plugin.deltalake.BaseDeltaLakeConnectorSmokeTest#testRenameExternalTableAcrossSchemas for more test coverage
-     */
-    @Override
-    public void testRenameTableAcrossSchema()
-    {
-        assertThatThrownBy(super::testRenameTableAcrossSchema)
-                .hasMessage("Renaming managed tables is not allowed with current metastore configuration")
-                .hasStackTraceContaining("SQL: ALTER TABLE test_rename_");
-    }
-
-    @Override
-    public void testRenameTableToUnqualifiedPreservesSchema()
-    {
-        assertThatThrownBy(super::testRenameTableToUnqualifiedPreservesSchema)
-                .hasMessage("Renaming managed tables is not allowed with current metastore configuration")
-                .hasStackTraceContaining("SQL: ALTER TABLE test_source_schema_");
-    }
-
-    @Override
-    public void testRenameTableToLongTableName()
-    {
-        assertThatThrownBy(super::testRenameTableToLongTableName)
-                .hasMessage("Renaming managed tables is not allowed with current metastore configuration")
-                .hasStackTraceContaining("SQL: ALTER TABLE test_rename_");
+                        ")", getSession().getCatalog().orElseThrow(), schemaName, bucketName));
     }
 
     @Override
@@ -334,7 +324,7 @@ public class TestDeltaLakeConnectorTest
             return;
         }
 
-        assertUpdate("CREATE SCHEMA " + schemaName + " WITH (location = 's3://" + BUCKET_NAME + "/" + schemaName + "')");
+        assertUpdate("CREATE SCHEMA " + schemaName + " WITH (location = 's3://" + bucketName + "/" + schemaName + "')");
         assertUpdate("CREATE TABLE " + schemaName + ".t(x int)");
         assertQueryFails("DROP SCHEMA " + schemaName, ".*Cannot drop non-empty schema '\\Q" + schemaName + "\\E'");
         assertUpdate("DROP TABLE " + schemaName + ".t");
@@ -544,7 +534,7 @@ public class TestDeltaLakeConnectorTest
     public void testTableLocationTrailingSpace()
     {
         String tableName = "table_with_space_" + randomNameSuffix();
-        String tableLocationWithTrailingSpace = "s3://" + BUCKET_NAME + "/" + tableName + " ";
+        String tableLocationWithTrailingSpace = "s3://" + bucketName + "/" + tableName + " ";
 
         assertUpdate(format("CREATE TABLE %s (customer VARCHAR) WITH (location = '%s')", tableName, tableLocationWithTrailingSpace));
         assertUpdate("INSERT INTO " + tableName + " (customer) VALUES ('Aaron'), ('Bill')", 2);
@@ -559,11 +549,11 @@ public class TestDeltaLakeConnectorTest
         String tableWithSlash = "table_with_slash";
         String tableWithoutSlash = "table_without_slash";
 
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR) WITH (location = 's3://%s/%s/')", tableWithSlash, BUCKET_NAME, tableWithSlash));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR) WITH (location = 's3://%s/%s/')", tableWithSlash, bucketName, tableWithSlash));
         assertUpdate(format("INSERT INTO %s (customer) VALUES ('Aaron'), ('Bill')", tableWithSlash), 2);
         assertQuery("SELECT * FROM " + tableWithSlash, "VALUES ('Aaron'), ('Bill')");
 
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR) WITH (location = 's3://%s/%s')", tableWithoutSlash, BUCKET_NAME, tableWithoutSlash));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR) WITH (location = 's3://%s/%s')", tableWithoutSlash, bucketName, tableWithoutSlash));
         assertUpdate(format("INSERT INTO %s (customer) VALUES ('Carol'), ('Dave')", tableWithoutSlash), 2);
         assertQuery("SELECT * FROM " + tableWithoutSlash, "VALUES ('Carol'), ('Dave')");
 
@@ -576,11 +566,11 @@ public class TestDeltaLakeConnectorTest
     {
         String targetTable = "merge_simple_target_" + randomNameSuffix();
         String sourceTable = "merge_simple_source_" + randomNameSuffix();
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])", targetTable, BUCKET_NAME, targetTable));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])", targetTable, bucketName, targetTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge'), ('Dave', 11, 'Devon')", targetTable), 4);
 
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')", sourceTable, BUCKET_NAME, sourceTable));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')", sourceTable, bucketName, sourceTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 6, 'Arches'), ('Ed', 7, 'Etherville'), ('Carol', 9, 'Centreville'), ('Dave', 11, 'Darbyshire')", sourceTable), 4);
 
@@ -602,12 +592,12 @@ public class TestDeltaLakeConnectorTest
     {
         String targetTable = "merge_formats_target_" + randomNameSuffix();
         String sourceTable = "merge_formats_source_" + randomNameSuffix();
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchase VARCHAR) WITH (location = 's3://%s/%s'%s)", targetTable, BUCKET_NAME, targetTable, partitionPhase));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchase VARCHAR) WITH (location = 's3://%s/%s'%s)", targetTable, bucketName, targetTable, partitionPhase));
 
         assertUpdate(format("INSERT INTO %s (customer, purchase) VALUES ('Dave', 'dates'), ('Lou', 'limes'), ('Carol', 'candles')", targetTable), 3);
         assertQuery("SELECT * FROM " + targetTable, "VALUES ('Dave', 'dates'), ('Lou', 'limes'), ('Carol', 'candles')");
 
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchase VARCHAR) WITH (location = 's3://%s/%s')", sourceTable, BUCKET_NAME, sourceTable));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchase VARCHAR) WITH (location = 's3://%s/%s')", sourceTable, bucketName, sourceTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchase) VALUES ('Craig', 'candles'), ('Len', 'limes'), ('Joe', 'jellybeans')", sourceTable), 3);
 
@@ -638,7 +628,7 @@ public class TestDeltaLakeConnectorTest
     {
         int targetCustomerCount = 32;
         String targetTable = "merge_multiple_" + randomNameSuffix();
-        assertUpdate(format("CREATE TABLE %s (purchase INT, zipcode INT, spouse VARCHAR, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s'%s)", targetTable, BUCKET_NAME, targetTable, partitioning));
+        assertUpdate(format("CREATE TABLE %s (purchase INT, zipcode INT, spouse VARCHAR, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s'%s)", targetTable, bucketName, targetTable, partitioning));
         String originalInsertFirstHalf = IntStream.range(1, targetCustomerCount / 2)
                 .mapToObj(intValue -> format("('joe_%s', %s, %s, 'jan_%s', '%s Poe Ct')", intValue, 1000, 91000, intValue, intValue))
                 .collect(Collectors.joining(", "));
@@ -700,7 +690,7 @@ public class TestDeltaLakeConnectorTest
     public void testMergeSimpleQueryPartitioned()
     {
         String targetTable = "merge_simple_" + randomNameSuffix();
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])", targetTable, BUCKET_NAME, targetTable));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])", targetTable, bucketName, targetTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge'), ('Dave', 11, 'Devon')", targetTable), 4);
 
@@ -723,11 +713,11 @@ public class TestDeltaLakeConnectorTest
     {
         String targetTable = "merge_multiple_target_" + randomNameSuffix();
         String sourceTable = "merge_multiple_source_" + randomNameSuffix();
-        assertUpdate(format(createTableSql, targetTable, BUCKET_NAME, targetTable));
+        assertUpdate(format(createTableSql, targetTable, bucketName, targetTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Antioch')", targetTable), 2);
 
-        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')", sourceTable, BUCKET_NAME, sourceTable));
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')", sourceTable, bucketName, sourceTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 6, 'Adelphi'), ('Aaron', 8, 'Ashland')", sourceTable), 2);
 
@@ -761,11 +751,11 @@ public class TestDeltaLakeConnectorTest
         String targetTable = format("%s_target_%s", testDescription, randomNameSuffix());
         String sourceTable = format("%s_source_%s", testDescription, randomNameSuffix());
 
-        assertUpdate(format(createTargetTableSql, targetTable, BUCKET_NAME, targetTable));
+        assertUpdate(format(createTargetTableSql, targetTable, bucketName, targetTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge'), ('Dave', 11, 'Devon')", targetTable), 4);
 
-        assertUpdate(format(createSourceTableSql, sourceTable, BUCKET_NAME, sourceTable));
+        assertUpdate(format(createSourceTableSql, sourceTable, bucketName, sourceTable));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 6, 'Arches'), ('Ed', 7, 'Etherville'), ('Carol', 9, 'Centreville'), ('Dave', 11, 'Darbyshire')", sourceTable), 4);
 
@@ -952,19 +942,6 @@ public class TestDeltaLakeConnectorTest
     }
 
     @Test
-    public void testProjectionPushdown()
-    {
-        String tableName = "test_projection_pushdown_" + randomNameSuffix();
-
-        assertUpdate("CREATE TABLE " + tableName + " (id BIGINT, root ROW(f1 BIGINT, f2 BIGINT))");
-        assertUpdate("INSERT INTO " + tableName + " VALUES (1, ROW(1, 2)), (1, NULl), (1, ROW(NULL, 4))", 3);
-
-        assertQuery("SELECT root.f1, id FROM " + tableName, "VALUES (1, 1), (NULL, 1), (NULL, 1)");
-
-        assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
     public void testProjectionPushdownOnPartitionedTables()
     {
         String tableNamePartitionAtBeginning = "test_table_with_partition_at_beginning_" + randomNameSuffix();
@@ -981,178 +958,6 @@ public class TestDeltaLakeConnectorTest
     }
 
     @Test
-    public void testProjectionWithCaseSensitiveField()
-    {
-        // TODO consider moving this in BaseConnectorTest
-        String tableName = "test_projection_with_case_sensitive_field_" + randomNameSuffix();
-
-        assertUpdate("CREATE TABLE " + tableName + " (id INT, a ROW(\"UPPER_CASE\" INT, \"lower_case\" INT, \"MiXeD_cAsE\" INT))");
-        assertUpdate("INSERT INTO " + tableName + " VALUES (1, ROW(2, 3, 4)), (5, ROW(6, 7, 8))", 2);
-
-        String expected = "VALUES (2, 3, 4), (6, 7, 8)";
-        assertQuery("SELECT a.UPPER_CASE, a.lower_case, a.MiXeD_cAsE FROM " + tableName, expected);
-        assertQuery("SELECT a.upper_case, a.lower_case, a.mixed_case FROM " + tableName, expected);
-        assertQuery("SELECT a.UPPER_CASE, a.LOWER_CASE, a.MIXED_CASE FROM " + tableName, expected);
-        assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
-    public void testProjectionPushdownMultipleRows()
-    {
-        String tableName = "test_projection_pushdown_multiple_rows_" + randomNameSuffix();
-
-        assertUpdate("CREATE TABLE " + tableName +
-                " (id BIGINT, nested1 ROW(child1 BIGINT, child2 VARCHAR, child3 INT), nested2 ROW(child1 DOUBLE, child2 BOOLEAN, child3 DATE))");
-        assertUpdate("INSERT INTO " + tableName + " VALUES" +
-                        " (1, ROW(10, 'a', 100), ROW(10.10, true, DATE '2023-04-19'))," +
-                        " (2, ROW(20, 'b', 200), ROW(20.20, false, DATE '1990-04-20'))," +
-                        " (4, ROW(40, NULL, 400), NULL)," +
-                        " (5, NULL, ROW(NULL, true, NULL))",
-                4);
-
-        // Select one field from one row field
-        assertQuery("SELECT id, nested1.child1 FROM " + tableName, "VALUES (1, 10), (2, 20), (4, 40), (5, NULL)");
-        assertQuery("SELECT nested2.child3, id FROM " + tableName, "VALUES (DATE '2023-04-19', 1), (DATE '1990-04-20', 2), (NULL, 4), (NULL, 5)");
-
-        // Select one field each from multiple row fields
-        assertQuery("SELECT nested2.child1, id, nested1.child2 FROM " + tableName, "VALUES (10.10, 1, 'a'), (20.20, 2, 'b'), (NULL, 4, NULL), (NULL, 5, NULL)");
-
-        // Select multiple fields from one row field
-        assertQuery("SELECT nested1.child3, id, nested1.child2 FROM " + tableName, "VALUES (100, 1, 'a'), (200, 2, 'b'), (400, 4, NULL), (NULL, 5, NULL)");
-        assertQuery(
-                "SELECT nested2.child2, nested2.child3, id FROM " + tableName,
-                "VALUES (true, DATE '2023-04-19' , 1), (false, DATE '1990-04-20', 2), (NULL, NULL, 4), (true, NULL, 5)");
-
-        // Select multiple fields from multiple row fields
-        assertQuery(
-                "SELECT id, nested2.child1, nested1.child3, nested2.child2, nested1.child1 FROM " + tableName,
-                "VALUES (1, 10.10, 100, true, 10), (2, 20.20, 200, false, 20), (4, NULL, 400, NULL, 40), (5, NULL, NULL, true, NULL)");
-
-        // Select only nested fields
-        assertQuery("SELECT nested2.child2, nested1.child3 FROM " + tableName, "VALUES (true, 100), (false, 200), (NULL, 400), (true, NULL)");
-
-        assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
-    public void testReadHighlyNestedData()
-    {
-        // TODO consider moving this in BaseConnectorTest
-        String tableName = "test_highly_nested_data_" + randomNameSuffix();
-
-        assertUpdate("CREATE TABLE " + tableName + " (id INT, row1_t ROW(f1 INT, f2 INT, row2_t ROW (f1 INT, f2 INT, row3_t ROW(f1 INT, f2 INT))))");
-        assertUpdate("INSERT INTO " + tableName + " VALUES (1, ROW(2, 3, ROW(4, 5, ROW(6, 7)))), (11, ROW(12, 13, ROW(14, 15, ROW(16, 17))))", 2);
-        assertUpdate("INSERT INTO " + tableName + " VALUES (21, ROW(22, 23, ROW(24, 25, ROW(26, 27))))", 1);
-
-        // Test select projected columns, with and without their parent column
-        assertQuery("SELECT id, row1_t.row2_t.row3_t.f2 FROM " + tableName, "VALUES (1, 7), (11, 17), (21, 27)");
-        assertQuery("SELECT id, row1_t.row2_t.row3_t.f2, CAST(row1_t AS JSON) FROM " + tableName,
-                "VALUES (1, 7, '{\"f1\":2,\"f2\":3,\"row2_t\":{\"f1\":4,\"f2\":5,\"row3_t\":{\"f1\":6,\"f2\":7}}}'), " +
-                        "(11, 17, '{\"f1\":12,\"f2\":13,\"row2_t\":{\"f1\":14,\"f2\":15,\"row3_t\":{\"f1\":16,\"f2\":17}}}'), " +
-                        "(21, 27, '{\"f1\":22,\"f2\":23,\"row2_t\":{\"f1\":24,\"f2\":25,\"row3_t\":{\"f1\":26,\"f2\":27}}}')");
-
-        // Test predicates on immediate child column and deeper nested column
-        assertQuery("SELECT id, CAST(row1_t.row2_t.row3_t AS JSON) FROM " + tableName + " WHERE row1_t.row2_t.row3_t.f2 = 27", "VALUES (21, '{\"f1\":26,\"f2\":27}')");
-        assertQuery("SELECT id, CAST(row1_t.row2_t.row3_t AS JSON) FROM " + tableName + " WHERE row1_t.row2_t.row3_t.f2 > 20", "VALUES (21, '{\"f1\":26,\"f2\":27}')");
-        assertQuery("SELECT id, CAST(row1_t AS JSON) FROM " + tableName + " WHERE row1_t.row2_t.row3_t.f2 = 27",
-                "VALUES (21, '{\"f1\":22,\"f2\":23,\"row2_t\":{\"f1\":24,\"f2\":25,\"row3_t\":{\"f1\":26,\"f2\":27}}}')");
-        assertQuery("SELECT id, CAST(row1_t AS JSON) FROM " + tableName + " WHERE row1_t.row2_t.row3_t.f2 > 20",
-                "VALUES (21, '{\"f1\":22,\"f2\":23,\"row2_t\":{\"f1\":24,\"f2\":25,\"row3_t\":{\"f1\":26,\"f2\":27}}}')");
-
-        // Test predicates on parent columns
-        assertQuery("SELECT id, row1_t.row2_t.row3_t.f1 FROM " + tableName + " WHERE row1_t.row2_t.row3_t = ROW(16, 17)", "VALUES (11, 16)");
-        assertQuery("SELECT id, row1_t.row2_t.row3_t.f1 FROM " + tableName + " WHERE row1_t = ROW(22, 23, ROW(24, 25, ROW(26, 27)))", "VALUES (21, 26)");
-
-        // Explain highly nested select
-        assertExplain(
-                "EXPLAIN SELECT id, row1_t.row2_t.row3_t.f1, row1_t.row2_t.f1, row1_t.row2_t.row3_t.f2 FROM " + tableName + " WHERE row1_t.row2_t.row3_t.f2 = 27",
-                "ScanFilter\\[table = (.*), filterPredicate = \\(\"row1_t#row2_t#row3_t#f2\" = 27\\)]",
-                "id(.*) := id:integer:REGULAR",
-                "row1_t#row2_t#f1 := row1_t#row2_t#f1:integer:REGULAR",
-                "row1_t#row2_t#row3_t#f1 := row1_t#row2_t#row3_t#f1:integer:REGULAR",
-                "row1_t#row2_t#row3_t#f2 := row1_t#row2_t#row3_t#f2:integer:REGULAR");
-
-        assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
-    public void testProjectionPushdownReadsLessData()
-    {
-        // TODO consider moving this in BaseConnectorTest
-        String tableName = "test_projection_pushdown_reads_less_data_" + randomNameSuffix();
-
-        assertUpdate("CREATE TABLE " + tableName + " (id INT, root ROW(leaf1 BIGINT, leaf2 BIGINT))");
-        assertUpdate("INSERT INTO " + tableName + " SELECT val, ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)", 10);
-
-        MaterializedResult expectedResult = computeActual("SELECT val + 2 FROM UNNEST(SEQUENCE(1, 10)) AS t(val)");
-        String selectQuery = "SELECT root.leaf2 FROM " + tableName;
-        Session sessionWithoutPushdown = Session.builder(getSession())
-                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "projection_pushdown_enabled", "false")
-                .build();
-
-        assertQueryStats(
-                getSession(),
-                selectQuery,
-                statsWithPushdown -> {
-                    DataSize physicalInputDataSizeWithPushdown = statsWithPushdown.getPhysicalInputDataSize();
-                    DataSize processedDataSizeWithPushdown = statsWithPushdown.getProcessedInputDataSize();
-                    assertQueryStats(
-                            sessionWithoutPushdown,
-                            selectQuery,
-                            statsWithoutPushdown -> {
-                                assertThat(statsWithoutPushdown.getPhysicalInputDataSize()).isGreaterThan(physicalInputDataSizeWithPushdown);
-                                assertThat(statsWithoutPushdown.getProcessedInputDataSize()).isGreaterThan(processedDataSizeWithPushdown);
-                            },
-                            results -> assertEquals(results.getOnlyColumnAsSet(), expectedResult.getOnlyColumnAsSet()));
-                },
-                results -> assertEquals(results.getOnlyColumnAsSet(), expectedResult.getOnlyColumnAsSet()));
-
-        assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
-    public void testProjectionPushdownPhysicalInputSize()
-    {
-        // TODO consider moving this in BaseConnectorTest
-        String tableName = "test_projection_pushdown_physical_input_size_" + randomNameSuffix();
-
-        assertUpdate("CREATE TABLE " + tableName + " (id INT, root ROW(leaf1 BIGINT, leaf2 BIGINT))");
-        assertUpdate("INSERT INTO " + tableName + " SELECT val, ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)", 10);
-
-        // Verify that the physical input size is smaller when reading the root.leaf1 field compared to reading the root field
-        assertQueryStats(
-                getSession(),
-                "SELECT root FROM " + tableName,
-                statsWithSelectRootField -> {
-                    assertQueryStats(
-                            getSession(),
-                            "SELECT root.leaf1 FROM " + tableName,
-                            statsWithSelectLeafField -> {
-                                assertThat(statsWithSelectLeafField.getPhysicalInputDataSize()).isLessThan(statsWithSelectRootField.getPhysicalInputDataSize());
-                            },
-                            results -> assertEquals(results.getOnlyColumnAsSet(), computeActual("SELECT val + 1 FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
-                },
-                results -> assertEquals(results.getOnlyColumnAsSet(), computeActual("SELECT ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
-
-        // Verify that the physical input size is the same when reading the root field compared to reading both the root and root.leaf1 fields
-        assertQueryStats(
-                getSession(),
-                "SELECT root FROM " + tableName,
-                statsWithSelectRootField -> {
-                    assertQueryStats(
-                            getSession(),
-                            "SELECT root, root.leaf1 FROM " + tableName,
-                            statsWithSelectRootAndLeafField -> {
-                                assertThat(statsWithSelectRootAndLeafField.getPhysicalInputDataSize()).isEqualTo(statsWithSelectRootField.getPhysicalInputDataSize());
-                            },
-                            results -> assertEqualsIgnoreOrder(results.getMaterializedRows(), computeActual("SELECT ROW(val + 1, val + 2), val + 1 FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getMaterializedRows()));
-                },
-                results -> assertEquals(results.getOnlyColumnAsSet(), computeActual("SELECT ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
-
-        assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
     public void testProjectionPushdownColumnReorderInSchemaAndDataFile()
     {
         try (TestTable testTable = new TestTable(getQueryRunner()::execute,
@@ -1160,7 +965,7 @@ public class TestDeltaLakeConnectorTest
                 "(id BIGINT, nested1 ROW(a BIGINT, b VARCHAR, c INT), nested2 ROW(d DOUBLE, e BOOLEAN, f DATE))")) {
             assertUpdate("INSERT INTO " + testTable.getName() + " VALUES (100, ROW(10, 'a', 100), ROW(10.10, true, DATE '2023-04-19'))", 1);
             String tableDataFile = ((String) computeScalar("SELECT \"$path\" FROM " + testTable.getName()))
-                    .replaceFirst("s3://" + BUCKET_NAME, "");
+                    .replaceFirst("s3://" + bucketName, "");
 
             try (TestTable temporaryTable = new TestTable(
                     getQueryRunner()::execute,
@@ -1169,10 +974,10 @@ public class TestDeltaLakeConnectorTest
                 assertUpdate("INSERT INTO " + temporaryTable.getName() + " VALUES (ROW(10.10, true, DATE '2023-04-19'), 100, ROW(10, 'a', 100))", 1);
 
                 String temporaryDataFile = ((String) computeScalar("SELECT \"$path\" FROM " + temporaryTable.getName()))
-                        .replaceFirst("s3://" + BUCKET_NAME, "");
+                        .replaceFirst("s3://" + bucketName, "");
 
                 // Replace table1 data file with table2 data file, so that the table's schema and data's schema has different column order
-                hiveMinioDataLake.getMinioClient().copyObject(BUCKET_NAME, temporaryDataFile, BUCKET_NAME, tableDataFile);
+                minioClient.copyObject(bucketName, temporaryDataFile, bucketName, tableDataFile);
             }
 
             assertThat(query("SELECT nested2.e, nested1.a, nested2.f, nested1.b, id FROM " + testTable.getName()))
@@ -1283,7 +1088,7 @@ public class TestDeltaLakeConnectorTest
 
         assertUpdate("UPDATE " + tableName + " SET domain = 'domain4' WHERE views = 2", 2);
         assertQuery("SELECT * FROM " + tableName, "" +
-                        """
+                """
                             VALUES
                                 ('url1', 'domain1', 1),
                                 ('url2', 'domain4', 2),
@@ -1310,7 +1115,7 @@ public class TestDeltaLakeConnectorTest
 
         assertUpdate("DELETE FROM " + tableName + " WHERE domain = 'domain4'", 2);
         assertQuery("SELECT * FROM " + tableName,
-                        """
+                """
                             VALUES
                                 ('url1', 'domain1', 1),
                                 ('url3', 'domain1', 3),
@@ -1347,7 +1152,7 @@ public class TestDeltaLakeConnectorTest
                 "THEN INSERT (page_url, domain, views) VALUES (source.page_url, source.domain, source.views)", 4);
 
         assertQuery("SELECT * FROM " + tableName1,
-                        """
+                """
                             VALUES
                                 ('url2', 'domain2', 22),
                                 ('url3', 'domain3', 3),
@@ -1392,7 +1197,7 @@ public class TestDeltaLakeConnectorTest
                 "THEN INSERT (page_url, domain, views) VALUES (source.page_url, source.domain, source.views)", 4);
 
         assertQuery("SELECT * FROM " + targetTable,
-                        """
+                """
                         VALUES
                             ('url3', 'domain3', 3),
                             ('url4', 'domain1', 44),
@@ -1428,12 +1233,12 @@ public class TestDeltaLakeConnectorTest
                 "THEN INSERT (page_url, domain, views) VALUES (source.page_url, source.domain, source.views)", 4);
 
         assertQuery("SELECT * FROM " + targetTable,
-                 """
-                 VALUES
-                    ('url4', 'domain2', 444),
-                    ('url5', 'domain3', 505),
-                    ('url6', 'domain1', 600)
-                 """);
+                """
+                        VALUES
+                           ('url4', 'domain2', 444),
+                           ('url5', 'domain3', 505),
+                           ('url6', 'domain1', 600)
+                        """);
 
         assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + targetTable + "', 2))",
                 """
@@ -1475,10 +1280,10 @@ public class TestDeltaLakeConnectorTest
 
         assertQuery("SELECT * FROM " + tableName,
                 """
-                 VALUES
-                    ('url22', 'domain2', 2),
-                    ('url33', 'domain3', 3)
-                 """);
+                        VALUES
+                           ('url22', 'domain2', 2),
+                           ('url33', 'domain3', 3)
+                        """);
 
         assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 1000))",
                 "since_version: 1000 is higher then current table version: 6");
@@ -1591,10 +1396,10 @@ public class TestDeltaLakeConnectorTest
 
         assertQuery("SELECT * FROM " + tableName,
                 """
-                 VALUES
-                    ('url22', 'domain2', 2),
-                    ('url33', 'domain3', 3)
-                 """);
+                        VALUES
+                           ('url22', 'domain2', 2),
+                           ('url33', 'domain3', 3)
+                        """);
 
         assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
                 "Change Data Feed is not enabled at version 4. Version contains 'remove' entries without 'cdc' entries");
@@ -1614,8 +1419,8 @@ public class TestDeltaLakeConnectorTest
     {
         String tableName = "test_basic_operations_on_table_with_cdf_enabled_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " WITH (change_data_feed_enabled = true) AS SELECT * FROM (VALUES" +
-                "('url1', 'domain1', 1), " +
-                "('url2', 'domain2', 2)) t(page_url, domain, views)",
+                        "('url1', 'domain1', 1), " +
+                        "('url2', 'domain2', 2)) t(page_url, domain, views)",
                 2);
 
         assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
@@ -1647,7 +1452,7 @@ public class TestDeltaLakeConnectorTest
         getQueryRunner().execute(sessionWithShortRetentionUnlocked, "CALL delta.system.vacuum('test_schema', '" + tableName + "', '" + retention + "s')");
         allFilesFromCdfDirectory = getAllFilesFromCdfDirectory(tableName);
         assertThat(allFilesFromCdfDirectory).hasSizeBetween(1, 2);
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 2))", ".*File does not exist.*");
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 2))", "Error opening Hive split .*");
         assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
                 """
                         VALUES
@@ -1705,7 +1510,7 @@ public class TestDeltaLakeConnectorTest
     public void testTableWithTrailingSlashLocation(boolean partitioned)
     {
         String tableName = "test_table_with_trailing_slash_location_" + randomNameSuffix();
-        String location = format("s3://%s/%s/", BUCKET_NAME, tableName);
+        String location = format("s3://%s/%s/", bucketName, tableName);
 
         assertUpdate("CREATE TABLE " + tableName + "(col_str, col_int)" +
                 "WITH (location = '" + location + "'" +
@@ -1735,7 +1540,7 @@ public class TestDeltaLakeConnectorTest
     @Override
     protected String createSchemaSql(String schemaName)
     {
-        return "CREATE SCHEMA " + schemaName + " WITH (location = 's3://" + BUCKET_NAME + "/" + schemaName + "')";
+        return "CREATE SCHEMA " + schemaName + " WITH (location = 's3://" + bucketName + "/" + schemaName + "')";
     }
 
     @Override
@@ -1747,7 +1552,7 @@ public class TestDeltaLakeConnectorTest
     @Override
     protected void verifySchemaNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessageMatching("(?s)(.*Read timed out)|(.*\"`NAME`\" that has maximum length of 128.*)");
+        assertThat(e).hasMessageMatching("Schema name must be shorter than or equal to '128' characters but got.*");
     }
 
     @Override
@@ -1759,7 +1564,7 @@ public class TestDeltaLakeConnectorTest
     @Override
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessageMatching("(?s)(.*Read timed out)|(.*\"`TBL_NAME`\" that has maximum length of 128.*)");
+        assertThat(e).hasMessageMatching("Table name must be shorter than or equal to '128' characters but got.*");
     }
 
     private Set<String> getActiveFiles(String tableName)
@@ -1783,8 +1588,8 @@ public class TestDeltaLakeConnectorTest
 
     private List<String> getTableFiles(String tableName)
     {
-        return hiveMinioDataLake.listFiles(format("%s/%s", SCHEMA, tableName)).stream()
-                .map(path -> format("s3://%s/%s", BUCKET_NAME, path))
+        return minioClient.listObjects(bucketName, format("%s/%s", SCHEMA, tableName)).stream()
+                .map(path -> format("s3://%s/%s", bucketName, path))
                 .collect(toImmutableList());
     }
 

@@ -15,6 +15,7 @@ package io.trino.metadata;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.util.concurrent.UncheckedExecutionException;
+import com.google.inject.Inject;
 import io.trino.FeaturesConfig;
 import io.trino.collect.cache.NonEvictableCache;
 import io.trino.connector.CatalogServiceProvider;
@@ -33,12 +34,10 @@ import io.trino.spi.function.InvocationConvention;
 import io.trino.spi.function.InvocationConvention.InvocationArgumentConvention;
 import io.trino.spi.function.ScalarFunctionImplementation;
 import io.trino.spi.function.WindowFunctionSupplier;
-import io.trino.spi.ptf.TableFunctionProcessorProvider;
+import io.trino.spi.function.table.TableFunctionProcessorProvider;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import io.trino.type.BlockTypeOperators;
-
-import javax.inject.Inject;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodType;

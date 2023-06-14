@@ -21,6 +21,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
+import com.google.inject.Inject;
 import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
@@ -28,6 +29,7 @@ import io.trino.collect.cache.NonEvictableLoadingCache;
 import io.trino.plugin.accumulo.conf.AccumuloConfig;
 import io.trino.plugin.accumulo.model.AccumuloColumnConstraint;
 import io.trino.spi.TrinoException;
+import jakarta.annotation.PreDestroy;
 import org.apache.accumulo.core.client.BatchScanner;
 import org.apache.accumulo.core.client.Connector;
 import org.apache.accumulo.core.data.Key;
@@ -36,9 +38,6 @@ import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.hadoop.io.Text;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
 
 import java.util.Collection;
 import java.util.HashMap;
