@@ -122,7 +122,7 @@ for arch in "${ARCHITECTURES[@]}"; do
         --progress=plain \
         --pull \
         --build-arg JDK_VERSION="${JDK_VERSION}" \
-        --build-arg JDK_DOWNLOAD_LINK="$(temurin_jdk_link "${JDK_VERSION}" "${arch}")" \
+        --build-arg JDK_DOWNLOAD_LINK="https://cdn.azul.com/zulu/bin/zulu21.32.17-ca-jdk21.0.2-linux_aarch64.tar.gz" \
         --platform "linux/$arch" \
         -f Dockerfile \
         -t "${TAG_PREFIX}-$arch" \
