@@ -25,6 +25,7 @@ import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.plugin.iceberg.catalog.jdbc.TestingIcebergJdbcServer;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
+import io.trino.testing.QueryRunner;
 import io.trino.testing.containers.Minio;
 import io.trino.tpch.TpchTable;
 import org.apache.iceberg.catalog.Catalog;
@@ -63,7 +64,7 @@ public final class IcebergQueryRunner
 
     private IcebergQueryRunner() {}
 
-    public static DistributedQueryRunner createIcebergQueryRunner(TpchTable<?>... tables)
+    public static QueryRunner createIcebergQueryRunner(TpchTable<?>... tables)
             throws Exception
     {
         return builder()
@@ -172,7 +173,7 @@ public final class IcebergQueryRunner
             testServer.start();
 
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setExtraProperties(ImmutableMap.of("http-server.http.port", "8080"))
                     .setBaseDataDir(Optional.of(warehouseLocation.toPath()))
                     .setIcebergProperties(ImmutableMap.of(
@@ -197,7 +198,7 @@ public final class IcebergQueryRunner
             // Requires AWS credentials, which can be provided any way supported by the DefaultProviderChain
             // See https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/credentials.html#credentials-default
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setExtraProperties(ImmutableMap.of("http-server.http.port", "8080"))
                     .setIcebergProperties(ImmutableMap.of("iceberg.catalog.type", "glue"))
                     .build();
@@ -221,12 +222,12 @@ public final class IcebergQueryRunner
             hiveMinioDataLake.start();
 
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setCoordinatorProperties(Map.of(
                             "http-server.http.port", "8080"))
                     .setIcebergProperties(Map.of(
                             "iceberg.catalog.type", "HIVE_METASTORE",
-                            "hive.metastore.uri", "thrift://" + hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint(),
+                            "hive.metastore.uri", hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint().toString(),
                             "fs.hadoop.enabled", "false",
                             "fs.native-s3.enabled", "true",
                             "s3.aws-access-key", MINIO_ACCESS_KEY,
@@ -265,7 +266,7 @@ public final class IcebergQueryRunner
             minio.createBucket(bucketName);
 
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setCoordinatorProperties(Map.of(
                             "http-server.http.port", "8080"))
                     .setIcebergProperties(Map.of(
@@ -300,14 +301,14 @@ public final class IcebergQueryRunner
                 throws Exception
         {
             String azureContainer = requireNonNull(
-                    System.getProperty("hive.hadoop2.azure-abfs-container"),
-                    "System property hive.hadoop2.azure-abfs-container must be provided");
+                    System.getProperty("testing.azure-abfs-container"),
+                    "System property testing.azure-abfs-container must be provided");
             String azureAccount = requireNonNull(
-                    System.getProperty("hive.hadoop2.azure-abfs-account"),
-                    "System property hive.hadoop2.azure-abfs-account must be provided");
+                    System.getProperty("testing.azure-abfs-account"),
+                    "System property testing.azure-abfs-account must be provided");
             String azureAccessKey = requireNonNull(
-                    System.getProperty("hive.hadoop2.azure-abfs-access-key"),
-                    "System property hive.hadoop2.azure-abfs-access-key must be provided");
+                    System.getProperty("testing.azure-abfs-access-key"),
+                    "System property testing.azure-abfs-access-key must be provided");
 
             String abfsSpecificCoreSiteXmlContent = Resources.toString(Resources.getResource("hdp3.1-core-site.xml.abfs-template"), UTF_8)
                     .replace("%ABFS_ACCESS_KEY%", azureAccessKey)
@@ -326,12 +327,12 @@ public final class IcebergQueryRunner
             hiveHadoop.start();
 
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setCoordinatorProperties(Map.of(
                             "http-server.http.port", "8080"))
                     .setIcebergProperties(Map.of(
                             "iceberg.catalog.type", "HIVE_METASTORE",
-                            "hive.metastore.uri", "thrift://" + hiveHadoop.getHiveMetastoreEndpoint(),
+                            "hive.metastore.uri", hiveHadoop.getHiveMetastoreEndpoint().toString(),
                             "hive.azure.abfs-storage-account", azureAccount,
                             "hive.azure.abfs-access-key", azureAccessKey))
                     .setSchemaInitializer(
@@ -361,7 +362,7 @@ public final class IcebergQueryRunner
             TestingIcebergJdbcServer server = new TestingIcebergJdbcServer();
 
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setExtraProperties(ImmutableMap.of("http-server.http.port", "8080"))
                     .setIcebergProperties(ImmutableMap.<String, String>builder()
                             .put("iceberg.catalog.type", "jdbc")
@@ -390,7 +391,7 @@ public final class IcebergQueryRunner
         {
             Logger log = Logger.get(DefaultIcebergQueryRunnerMain.class);
             @SuppressWarnings("resource")
-            DistributedQueryRunner queryRunner = IcebergQueryRunner.builder()
+            QueryRunner queryRunner = IcebergQueryRunner.builder()
                     .setExtraProperties(ImmutableMap.of("http-server.http.port", "8080"))
                     .setInitialTables(TpchTable.getTables())
                     .build();

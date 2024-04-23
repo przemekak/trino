@@ -17,7 +17,6 @@ import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.filesystem.Location;
@@ -488,7 +487,7 @@ public final class TestHiveFileFormats
         assertThatFileFormat(ORC)
                 .withWriteColumns(testColumns)
                 .withRowsCount(rowCount)
-                .withReadColumns(Lists.reverse(testColumns))
+                .withReadColumns(testColumns.reversed())
                 .withSession(session)
                 .isReadableByPageSource(fileSystemFactory -> new OrcPageSourceFactory(new OrcReaderOptions(), fileSystemFactory, STATS, UTC));
     }
@@ -603,7 +602,7 @@ public final class TestHiveFileFormats
                 .isReadableByPageSource(fileSystemFactory -> new ParquetPageSourceFactory(fileSystemFactory, STATS, new ParquetReaderConfig(), new HiveConfig()));
 
         // test the name-based access
-        readColumns = Lists.reverse(writeColumns);
+        readColumns = writeColumns.reversed();
         assertThatFileFormat(PARQUET)
                 .withWriteColumns(writeColumns)
                 .withReadColumns(readColumns)
@@ -1497,7 +1496,7 @@ public final class TestHiveFileFormats
         configureCompression(jobConf, compressionCodec);
 
         File file = File.createTempFile("trino_test", "data");
-        file.delete();
+        verify(file.delete());
         try {
             FileSinkOperator.RecordWriter recordWriter = outputFormat.getHiveRecordWriter(
                     jobConf,
@@ -1539,7 +1538,7 @@ public final class TestHiveFileFormats
             }
         }
         finally {
-            file.delete();
+            verify(file.delete());
         }
     }
 
@@ -1564,7 +1563,7 @@ public final class TestHiveFileFormats
         }
 
         // For Parquet
-        config.set(ParquetOutputFormat.COMPRESSION, compressionCodec.getParquetCompressionCodec().name());
+        config.set(ParquetOutputFormat.COMPRESSION, compressionCodec.getParquetCompressionCodec().orElseThrow().name());
 
         // For Avro
         compressionCodec.getAvroCompressionKind().ifPresent(kind -> config.set("avro.output.codec", kind.toString()));

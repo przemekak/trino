@@ -21,6 +21,7 @@ import io.airlift.log.Logging;
 import io.trino.Session;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
+import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
 
 import java.util.HashMap;
@@ -40,20 +41,20 @@ public final class CassandraQueryRunner
 
     private CassandraQueryRunner() {}
 
-    public static DistributedQueryRunner createCassandraQueryRunner(CassandraServer server, TpchTable<?>... tables)
+    public static QueryRunner createCassandraQueryRunner(CassandraServer server, TpchTable<?>... tables)
             throws Exception
     {
         return createCassandraQueryRunner(server, ImmutableMap.of(), ImmutableMap.of(), ImmutableList.copyOf(tables));
     }
 
-    public static DistributedQueryRunner createCassandraQueryRunner(
+    public static QueryRunner createCassandraQueryRunner(
             CassandraServer server,
             Map<String, String> extraProperties,
             Map<String, String> connectorProperties,
             Iterable<TpchTable<?>> tables)
             throws Exception
     {
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(createCassandraSession("tpch"))
+        QueryRunner queryRunner = DistributedQueryRunner.builder(createCassandraSession("tpch"))
                 .setExtraProperties(extraProperties)
                 .build();
 
@@ -72,7 +73,7 @@ public final class CassandraQueryRunner
         queryRunner.createCatalog("cassandra", "cassandra", connectorProperties);
 
         createKeyspace(server.getSession(), "tpch");
-        copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createCassandraSession("tpch"), tables);
+        copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, tables);
         for (TpchTable<?> table : tables) {
             server.refreshSizeEstimates("tpch", table.getTableName());
         }
@@ -91,7 +92,7 @@ public final class CassandraQueryRunner
     public static void main(String[] args)
             throws Exception
     {
-        DistributedQueryRunner queryRunner = createCassandraQueryRunner(
+        QueryRunner queryRunner = createCassandraQueryRunner(
                 new CassandraServer(),
                 ImmutableMap.of("http-server.http.port", "8080"),
                 ImmutableMap.of(),

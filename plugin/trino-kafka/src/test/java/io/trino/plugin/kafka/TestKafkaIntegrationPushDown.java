@@ -18,9 +18,8 @@ import io.trino.Session;
 import io.trino.execution.QueryInfo;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.kafka.TestingKafka;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -63,6 +62,7 @@ public class TestKafkaIntegrationPushDown
             throws Exception
     {
         testingKafka = closeAfterClass(TestingKafka.create());
+        testingKafka.start();
         topicNamePartition = "test_push_down_partition_" + UUID.randomUUID().toString().replaceAll("-", "_");
         topicNameOffset = "test_push_down_offset_" + UUID.randomUUID().toString().replaceAll("-", "_");
         topicNameCreateTime = "test_push_down_create_time_" + UUID.randomUUID().toString().replaceAll("-", "_");
@@ -75,7 +75,7 @@ public class TestKafkaIntegrationPushDown
                         .put(createEmptyTopicDescription(topicNameCreateTime, new SchemaTableName("default", topicNameCreateTime)))
                         .put(createEmptyTopicDescription(topicNameLogAppend, new SchemaTableName("default", topicNameLogAppend)))
                         .buildOrThrow())
-                .setExtraKafkaProperties(ImmutableMap.of("kafka.messages-per-split", "100"))
+                .addConnectorProperties(ImmutableMap.of("kafka.messages-per-split", "100"))
                 .build();
         testingKafka.createTopicWithConfig(2, 1, topicNamePartition, false);
         testingKafka.createTopicWithConfig(2, 1, topicNameOffset, false);
@@ -91,7 +91,7 @@ public class TestKafkaIntegrationPushDown
         String sql = format("SELECT count(*) FROM default.%s WHERE _partition_id=1", topicNamePartition);
 
         assertEventually(() -> {
-            MaterializedResultWithQueryId queryResult = getDistributedQueryRunner().executeWithQueryId(getSession(), sql);
+            MaterializedResultWithPlan queryResult = getDistributedQueryRunner().executeWithPlan(getSession(), sql);
             assertThat(getQueryInfo(getDistributedQueryRunner(), queryResult).getQueryStats().getProcessedInputPositions()).isEqualTo(MESSAGE_NUM / 2);
         });
     }
@@ -152,16 +152,16 @@ public class TestKafkaIntegrationPushDown
 
     private void assertProcessedInputPositions(String sql, long expectedProcessedInputPositions, Session session)
     {
-        DistributedQueryRunner queryRunner = getDistributedQueryRunner();
+        QueryRunner queryRunner = getDistributedQueryRunner();
         assertEventually(() -> {
-            MaterializedResultWithQueryId queryResult = queryRunner.executeWithQueryId(session, sql);
+            MaterializedResultWithPlan queryResult = queryRunner.executeWithPlan(session, sql);
             assertThat(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputPositions()).isEqualTo(expectedProcessedInputPositions);
         });
     }
 
-    private static QueryInfo getQueryInfo(DistributedQueryRunner queryRunner, MaterializedResultWithQueryId queryResult)
+    private static QueryInfo getQueryInfo(QueryRunner queryRunner, MaterializedResultWithPlan queryResult)
     {
-        return queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryResult.getQueryId());
+        return queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryResult.queryId());
     }
 
     private RecordMessage createTimestampTestMessages(String topicName)

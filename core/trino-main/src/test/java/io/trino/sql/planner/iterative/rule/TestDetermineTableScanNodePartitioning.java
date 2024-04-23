@@ -143,7 +143,7 @@ public class TestDetermineTableScanNodePartitioning
             boolean expectedEnabled)
     {
         TableHandle tableHandle = tester.getCurrentCatalogTableHandle(TEST_SCHEMA, tableName);
-        tester.assertThat(new DetermineTableScanNodePartitioning(tester.getMetadata(), tester.getQueryRunner().getNodePartitioningManager(), new TaskCountEstimator(() -> numberOfTasks)))
+        tester.assertThat(new DetermineTableScanNodePartitioning(tester.getMetadata(), tester.getPlanTester().getNodePartitioningManager(), new TaskCountEstimator(() -> numberOfTasks)))
                 .withSession(session)
                 .on(p -> {
                     Symbol a = p.symbol(COLUMN_A);
@@ -155,7 +155,7 @@ public class TestDetermineTableScanNodePartitioning
                 })
                 .matches(
                         tableScan(
-                                tableHandle.getConnectorHandle()::equals,
+                                tableHandle.connectorHandle()::equals,
                                 TupleDomain.all(),
                                 ImmutableMap.of(
                                         "A", COLUMN_HANDLE_A::equals,

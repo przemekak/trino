@@ -38,11 +38,11 @@ import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.expression.ConnectorExpression;
-import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.type.Type;
 import org.weakref.jmx.Flatten;
@@ -125,6 +125,12 @@ public final class StatisticsAwareJdbcClient
     public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
     {
         return stats.getGetColumns().wrap(() -> delegate().getColumns(session, tableHandle));
+    }
+
+    @Override
+    public List<RelationCommentMetadata> getAllTableComments(ConnectorSession session, Optional<String> schema)
+    {
+        return stats.getGetAllTableComments().wrap(() -> delegate().getAllTableComments(session, schema));
     }
 
     @Override
@@ -297,6 +303,12 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
+    public void dropNotNullConstraint(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column)
+    {
+        stats.getDropNotNullConstraint().wrap(() -> delegate().dropNotNullConstraint(session, handle, column));
+    }
+
+    @Override
     public void renameTable(ConnectorSession session, JdbcTableHandle handle, SchemaTableName newTableName)
     {
         stats.getRenameTable().wrap(() -> delegate().renameTable(session, handle, newTableName));
@@ -374,12 +386,6 @@ public final class StatisticsAwareJdbcClient
             throws SQLException
     {
         return stats.getGetPreparedStatement().wrap(() -> delegate().getPreparedStatement(connection, sql, columnCount));
-    }
-
-    @Override
-    public TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle, TupleDomain<ColumnHandle> tupleDomain)
-    {
-        return stats.getGetTableStatistics().wrap(() -> delegate().getTableStatistics(session, handle, tupleDomain));
     }
 
     @Override

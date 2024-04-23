@@ -25,6 +25,7 @@ import io.trino.execution.FailureInjector.InjectedFailureType;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.ErrorType;
 import io.trino.spi.QueryId;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.tpch.TpchTable;
 import org.assertj.core.api.AbstractThrowableAssert;
 import org.junit.jupiter.api.Test;
@@ -410,16 +411,23 @@ public abstract class BaseFailureRecoveryTest
             }
         }
 
-        assertThat(remainingTemporaryTables.isEmpty())
-                .as("There should be no remaining tmp_trino tables that are queryable. They are:\n%s",
-                        remainingTemporaryTables.entrySet().stream()
-                                .map(entry -> "\tFor queryId [%s] (prefix [%s]) remaining tables: [%s]\n\t\tWith errors: [%s]".formatted(
-                                        entry.getKey(),
-                                        temporaryTableNamePrefix(entry.getKey()),
-                                        Joiner.on(",").join(entry.getValue()),
-                                        Joiner.on("],\n[").join(assertionErrorMessages.get(entry.getKey())).replace("\n", "\n\t\t\t")))
-                                .collect(joining("\n")))
-                .isTrue();
+        if (checkNoRemainingTmpTables()) {
+            assertThat(remainingTemporaryTables.isEmpty())
+                    .as("There should be no remaining tmp_trino tables that are queryable. They are:\n%s",
+                            remainingTemporaryTables.entrySet().stream()
+                                    .map(entry -> "\tFor queryId [%s] (prefix [%s]) remaining tables: [%s]\n\t\tWith errors: [%s]".formatted(
+                                            entry.getKey(),
+                                            temporaryTableNamePrefix(entry.getKey()),
+                                            Joiner.on(",").join(entry.getValue()),
+                                            Joiner.on("],\n[").join(assertionErrorMessages.get(entry.getKey())).replace("\n", "\n\t\t\t")))
+                                    .collect(joining("\n")))
+                    .isTrue();
+        }
+    }
+
+    protected boolean checkNoRemainingTmpTables()
+    {
+        return true;
     }
 
     protected class FailureRecoveryAssert
@@ -519,12 +527,12 @@ public abstract class BaseFailureRecoveryTest
             String tableName = "table_" + randomNameSuffix();
             setup.ifPresent(sql -> getQueryRunner().execute(noRetries(session), resolveTableName(sql, tableName)));
 
-            MaterializedResultWithQueryId resultWithQueryId = null;
+            MaterializedResultWithPlan resultWithPlan = null;
             RuntimeException failure = null;
             String queryId = null;
             try {
-                resultWithQueryId = getDistributedQueryRunner().executeWithQueryId(withTraceToken(session, traceToken), resolveTableName(query, tableName));
-                queryId = resultWithQueryId.getQueryId().getId();
+                resultWithPlan = getDistributedQueryRunner().executeWithPlan(withTraceToken(session, traceToken), resolveTableName(query, tableName));
+                queryId = resultWithPlan.queryId().getId();
             }
             catch (RuntimeException e) {
                 failure = e;
@@ -537,7 +545,7 @@ public abstract class BaseFailureRecoveryTest
                 queryIds.add(queryId);
             }
 
-            MaterializedResult result = resultWithQueryId == null ? null : resultWithQueryId.getResult();
+            MaterializedResult result = resultWithPlan == null ? null : resultWithPlan.result();
             Optional<MaterializedResult> updatedTableContent = Optional.empty();
             if (result != null && result.getUpdateCount().isPresent()) {
                 updatedTableContent = Optional.of(getQueryRunner().execute(noRetries(session), "SELECT * FROM " + tableName));
@@ -564,7 +572,7 @@ public abstract class BaseFailureRecoveryTest
                 throw failure;
             }
 
-            return new ExecutionResult(resultWithQueryId, updatedTableContent, updatedTableStatistics);
+            return new ExecutionResult(resultWithPlan, updatedTableContent, updatedTableStatistics);
         }
 
         public void isCoordinatorOnly()
@@ -751,13 +759,12 @@ public abstract class BaseFailureRecoveryTest
         private final Optional<MaterializedResult> updatedTableStatistics;
 
         private ExecutionResult(
-                MaterializedResultWithQueryId resultWithQueryId,
+                MaterializedResultWithPlan result,
                 Optional<MaterializedResult> updatedTableContent,
                 Optional<MaterializedResult> updatedTableStatistics)
         {
-            requireNonNull(resultWithQueryId, "resultWithQueryId is null");
-            this.queryResult = resultWithQueryId.getResult();
-            this.queryId = resultWithQueryId.getQueryId();
+            this.queryResult = result.result();
+            this.queryId = result.queryId();
             this.updatedTableContent = requireNonNull(updatedTableContent, "updatedTableContent is null");
             this.updatedTableStatistics = requireNonNull(updatedTableStatistics, "updatedTableStatistics is null");
         }

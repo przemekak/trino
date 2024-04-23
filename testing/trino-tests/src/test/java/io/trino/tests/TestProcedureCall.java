@@ -17,11 +17,10 @@ import io.trino.Session;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorPlugin;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.ProcedureTester;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingProcedures;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -54,13 +53,13 @@ public class TestProcedureCall
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return TpchQueryRunnerBuilder.builder().build();
+        return TpchQueryRunner.builder().build();
     }
 
     @BeforeAll
     public void setUp()
     {
-        DistributedQueryRunner queryRunner = getDistributedQueryRunner();
+        QueryRunner queryRunner = getDistributedQueryRunner();
         tester = queryRunner.getCoordinator().getProcedureTester();
         session = testSessionBuilder()
                 .setCatalog(TESTING_CATALOG)

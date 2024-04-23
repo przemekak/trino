@@ -13,17 +13,16 @@
  */
 package io.trino.plugin.bigquery;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestBigQueryAvroConnectorTest
         extends BaseBigQueryConnectorTest
@@ -42,10 +41,10 @@ public class TestBigQueryAvroConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return BigQueryQueryRunner.createQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of("bigquery.job.label-name", "trino_query", "bigquery.job.label-format", "q_$QUERY_ID__t_$TRACE_TOKEN"),
-                REQUIRED_TPCH_TABLES);
+        return BigQueryQueryRunner.builder()
+                .setConnectorProperties(Map.of("bigquery.job.label-name", "trino_query", "bigquery.job.label-format", "q_$QUERY_ID__t_$TRACE_TOKEN"))
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -68,8 +67,9 @@ public class TestBigQueryAvroConnectorTest
             try {
                 assertUpdate("INSERT INTO " + tableName + " VALUES ('test value')", 1);
                 // The storage API can't read the table, but query based API can read it
-                assertThatThrownBy(() -> query("SELECT * FROM " + tableName))
-                        .cause()
+                assertThat(query("SELECT * FROM " + tableName))
+                        // TODO should be TrinoException, provide better error message
+                        .nonTrinoExceptionFailure().cause()
                         .hasMessageMatching(".*(Illegal initial character|Invalid name).*");
                 assertThat(bigQuerySqlExecutor.executeQuery("SELECT * FROM " + tableName).getValues())
                         .extracting(field -> field.get(0).getStringValue())

@@ -153,7 +153,7 @@ cluster that handles short queries.
 Trino encrypts data before spooling it to storage. This prevents access to query
 data by anyone besides the Trino cluster that wrote it, including administrators
 of the storage system. A new encryption key is randomly generated for every
-exchange with every query, and keys are discarded once a query is completed.
+query, and the key is discarded once a query is completed.
 
 ## Advanced configuration
 
@@ -516,8 +516,8 @@ the property may be configured for:
   - HDFS
 :::
 
-It is recommended to set the `exchange.compression-enabled` property to
-`true` in the cluster's `config.properties` file, to reduce the exchange
+It is recommended to set the `exchange.compression-codec` property to
+`LZ4` in the cluster's `config.properties` file, to reduce the exchange
 manager's overall I/O load. It is also recommended to configure a bucket
 lifecycle rule to automatically expire abandoned objects in the event of a node
 crash.

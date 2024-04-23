@@ -23,7 +23,6 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.kafka.TestingKafka;
 import io.trino.testing.sql.TestTable;
-import io.trino.tpch.TpchTable;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.Test;
@@ -65,7 +64,6 @@ import static org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS
 import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestKafkaConnectorTest
@@ -95,6 +93,7 @@ public class TestKafkaConnectorTest
             throws Exception
     {
         testingKafka = closeAfterClass(TestingKafka.create());
+        testingKafka.start();
         rawFormatTopic = "test_raw_" + UUID.randomUUID().toString().replaceAll("-", "_");
         headersTopic = "test_header_" + UUID.randomUUID().toString().replaceAll("-", "_");
 
@@ -151,7 +150,7 @@ public class TestKafkaConnectorTest
                 .buildOrThrow();
 
         QueryRunner queryRunner = KafkaQueryRunner.builder(testingKafka)
-                .setTables(TpchTable.getTables())
+                .setTables(REQUIRED_TPCH_TABLES)
                 .setExtraTopicDescription(extraTopicDescriptions)
                 .build();
 
@@ -428,8 +427,8 @@ public class TestKafkaConnectorTest
     public void testInsertArray()
     {
         // Override because the base test uses CREATE TABLE statement that is unsupported in Kafka connector
-        assertThatThrownBy(() -> query("INSERT INTO " + TABLE_INSERT_ARRAY + " (a) VALUES (ARRAY[null])"))
-                .hasMessage("Unsupported column type 'array(double)' for column 'a'");
+        assertThat(query("INSERT INTO " + TABLE_INSERT_ARRAY + " (a) VALUES (ARRAY[null])"))
+                .nonTrinoExceptionFailure().hasMessage("Unsupported column type 'array(double)' for column 'a'");
         abort("not supported");
     }
 

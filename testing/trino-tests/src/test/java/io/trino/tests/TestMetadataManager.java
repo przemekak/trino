@@ -29,9 +29,9 @@ import io.trino.spi.QueryId;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.testing.DistributedQueryRunner;
+import io.trino.testing.QueryRunner;
 import io.trino.testing.TransactionBuilder;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import io.trino.tracing.TracingMetadata;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
@@ -62,14 +62,14 @@ import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 @Execution(SAME_THREAD) // metadataManager.getActiveQueryIds() is shared mutable state that affects the test outcome
 public class TestMetadataManager
 {
-    private DistributedQueryRunner queryRunner;
+    private QueryRunner queryRunner;
     private MetadataManager metadataManager;
 
     @BeforeAll
     public void setUp()
             throws Exception
     {
-        queryRunner = TpchQueryRunnerBuilder.builder().build();
+        queryRunner = TpchQueryRunner.builder().build();
         queryRunner.installPlugin(new Plugin()
         {
             @Override

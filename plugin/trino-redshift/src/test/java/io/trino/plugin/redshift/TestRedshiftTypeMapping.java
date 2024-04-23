@@ -49,7 +49,6 @@ import static io.trino.plugin.redshift.RedshiftQueryRunner.JDBC_PASSWORD;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.JDBC_URL;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.JDBC_USER;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.TEST_SCHEMA;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.createRedshiftQueryRunner;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.executeInRedshift;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -123,7 +122,8 @@ public class TestRedshiftTypeMapping
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createRedshiftQueryRunner(Map.of(), Map.of(), List.of());
+        return RedshiftQueryRunner.builder()
+                .build();
     }
 
     @Test
@@ -199,7 +199,7 @@ public class TestRedshiftTypeMapping
 
             // Test the type of an internal table
             assertThat(query(format("SELECT * FROM %s LIMIT 1", view2.name)))
-                    .hasOutputTypes(List.of(createUnboundedVarcharType()));
+                    .result().hasTypes(List.of(createUnboundedVarcharType()));
         }
     }
 
@@ -658,8 +658,8 @@ public class TestRedshiftTypeMapping
 
         // The max timestamp with time zone value in Redshift is larger than Trino
         try (TestTable table = new TestTable(getRedshiftExecutor(), TEST_SCHEMA + ".timestamp_tz_max", "(ts timestamptz)", ImmutableList.of("TIMESTAMP '294276-12-31 23:59:59' AT TIME ZONE 'UTC'"))) {
-            assertThatThrownBy(() -> query("SELECT * FROM " + table.getName()))
-                    .hasMessage("Millis overflow: 9224318015999000");
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .failure().hasMessage("Millis overflow: 9224318015999000");
         }
     }
 

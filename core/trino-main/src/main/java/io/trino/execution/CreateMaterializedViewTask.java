@@ -56,8 +56,8 @@ import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.trino.spi.connector.ConnectorCapabilities.MATERIALIZED_VIEW_GRACE_PERIOD;
 import static io.trino.sql.SqlFormatterUtil.getFormattedSql;
+import static io.trino.sql.analyzer.ConstantEvaluator.evaluateConstant;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
-import static io.trino.sql.planner.ExpressionInterpreter.evaluateConstantExpression;
 import static io.trino.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -122,7 +122,7 @@ public class CreateMaterializedViewTask
                 .map(field -> new ViewColumn(field.getName().get(), field.getType().getTypeId(), Optional.empty()))
                 .collect(toImmutableList());
 
-        String catalogName = name.getCatalogName();
+        String catalogName = name.catalogName();
         CatalogHandle catalogHandle = getRequiredCatalogHandle(plannerContext.getMetadata(), session, statement, catalogName);
 
         Map<String, Object> properties = materializedViewPropertyManager.getProperties(
@@ -145,15 +145,12 @@ public class CreateMaterializedViewTask
                     if (type != INTERVAL_DAY_TIME) {
                         throw new TrinoException(TYPE_MISMATCH, "Unsupported grace period type %s, expected %s".formatted(type.getDisplayName(), INTERVAL_DAY_TIME.getDisplayName()));
                     }
-                    Long milliseconds = (Long) evaluateConstantExpression(
+                    Long milliseconds = (Long) evaluateConstant(
                             expression,
-                            analysis.getCoercions(),
-                            analysis.getTypeOnlyCoercions(),
+                            type,
                             plannerContext,
                             session,
-                            accessControl,
-                            analysis.getColumnReferences(),
-                            parameterLookup);
+                            accessControl);
                     // Sanity check. Impossible per grammar.
                     verify(milliseconds != null, "Grace period cannot be null");
                     return Duration.ofMillis(milliseconds);

@@ -43,7 +43,6 @@ public class ExampleQueryRunner
                 .buildOrThrow();
         QueryRunner queryRunner = DistributedQueryRunner.builder(defaultSession)
                 .setExtraProperties(extraProperties)
-                .setNodeCount(1)
                 .build();
         queryRunner.installPlugin(new ExamplePlugin());
 
@@ -70,6 +69,6 @@ public class ExampleQueryRunner
 
         Logger log = Logger.get(ExampleQueryRunner.class);
         log.info("======== SERVER STARTED ========");
-        log.info("\n====\n%s\n====", ((DistributedQueryRunner) queryRunner).getCoordinator().getBaseUrl());
+        log.info("\n====\n%s\n====", queryRunner.getCoordinator().getBaseUrl());
     }
 }

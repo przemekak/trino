@@ -23,6 +23,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.google.common.collect.Ordering;
+import io.airlift.concurrent.MoreFutures;
 import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
@@ -48,6 +49,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.IntStream;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -65,13 +68,20 @@ import static io.trino.testing.QueryAssertions.assertContains;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.trino.tests.QueryTemplate.parameter;
 import static io.trino.tests.QueryTemplate.queryTemplate;
+import static io.trino.tpch.TpchTable.CUSTOMER;
+import static io.trino.tpch.TpchTable.LINE_ITEM;
+import static io.trino.tpch.TpchTable.NATION;
+import static io.trino.tpch.TpchTable.ORDERS;
+import static io.trino.tpch.TpchTable.PART;
+import static io.trino.tpch.TpchTable.PART_SUPPLIER;
+import static io.trino.tpch.TpchTable.REGION;
+import static io.trino.tpch.TpchTable.SUPPLIER;
 import static java.lang.String.format;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public abstract class AbstractTestEngineOnlyQueries
         extends AbstractTestQueryFramework
@@ -115,6 +125,8 @@ public abstract class AbstractTestEngineOnlyQueries
                     "connector double property",
                     99.0,
                     false));
+
+    protected static final List<TpchTable<?>> REQUIRED_TPCH_TABLES = List.of(CUSTOMER, LINE_ITEM, NATION, ORDERS, PART, PART_SUPPLIER, REGION, SUPPLIER);
 
     @Test
     public void testDateLiterals()
@@ -564,6 +576,23 @@ public abstract class AbstractTestEngineOnlyQueries
                         "       FROM (" + unionLineitem25Times + ")) o(c)) result(a) " +
                         "WHERE a = 1)",
                 "VALUES 1504375");
+    }
+
+    /**
+     * Regression test for <a href="https://github.com/trinodb/trino/issues/21630">#21630</a>
+     */
+    @Test
+    public void testMultipleConcurrentQueries()
+            throws Exception
+    {
+        try (ExecutorService executor = Executors.newCachedThreadPool()) {
+            executor.invokeAll(nCopies(4,
+                            () -> {
+                                testAssignUniqueId();
+                                return null;
+                            }))
+                    .forEach(MoreFutures::getDone);
+        }
     }
 
     @Test
@@ -1366,8 +1395,9 @@ public abstract class AbstractTestEngineOnlyQueries
                 .addPreparedStatement("my_query", "SELECT * FROM nation")
                 .build();
         assertThat(query(session, "DESCRIBE INPUT my_query"))
-                .hasOutputTypes(List.of(BIGINT, VARCHAR))
-                .returnsEmptyResult();
+                .result()
+                .hasTypes(List.of(BIGINT, VARCHAR))
+                .isEmpty();
     }
 
     @Test
@@ -5423,7 +5453,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertThat(result.getOnlyColumnAsSet()).containsAll(expectedTables);
 
         assertQueryFails("SHOW TABLES FROM UNKNOWN", "line 1:1: Schema 'unknown' does not exist");
-        assertQueryFails("SHOW TABLES FROM UNKNOWNCATALOG.UNKNOWNSCHEMA", "line 1:1: Catalog 'unknowncatalog' does not exist");
+        assertQueryFails("SHOW TABLES FROM UNKNOWNCATALOG.UNKNOWNSCHEMA", "line 1:1: Catalog 'unknowncatalog' not found");
     }
 
     @Test
@@ -6198,25 +6228,6 @@ public abstract class AbstractTestEngineOnlyQueries
                 .isFalse();
     }
 
-    @Test
-    public void testLargePivot()
-    {
-        int arrayConstructionLimit = 254;
-
-        MaterializedResult result = computeActual(pivotQuery(arrayConstructionLimit));
-        assertThat(result.getRowCount())
-                .as("row count")
-                .isEqualTo(arrayConstructionLimit);
-
-        MaterializedRow row = result.getMaterializedRows().get(0);
-        assertThat(row.getFieldCount())
-                .as("field count")
-                .isEqualTo(arrayConstructionLimit + 2);
-
-        // Verify that arrayConstructionLimit is the current limit so that the test stays relevant and prevents regression if we improve in the future.
-        assertQueryFails(pivotQuery(arrayConstructionLimit + 1), "Too many arguments for array constructor");
-    }
-
     private static String pivotQuery(int columnsCount)
     {
         String fields = IntStream.range(0, columnsCount)
@@ -6691,37 +6702,21 @@ public abstract class AbstractTestEngineOnlyQueries
                 .matches("VALUES 'cba'");
 
         // inline functions must be declared before they are used
-        assertThatThrownBy(() -> query("""
+        assertThat(query("""
                 WITH
                   FUNCTION a(x integer) RETURNS integer RETURN b(x),
                   FUNCTION b(x integer) RETURNS integer RETURN x * 2
                 SELECT a(10)
                 """))
-                .hasMessage("line 3:8: Function 'b' not registered");
+                .failure().hasMessage("line 3:8: Function 'b' not registered");
 
         // inline function cannot be recursive
         // note: mutual recursion is not supported either, but it is not tested due to the forward declaration limitation above
-        assertThatThrownBy(() -> query("""
+        assertThat(query("""
                 WITH FUNCTION a(x integer) RETURNS integer RETURN a(x)
                 SELECT a(10)
                 """))
-                .hasMessage("line 3:8: Recursive language functions are not supported: a(integer):integer");
-    }
-
-    // ensure that JSON_TABLE runs properly in distributed mode (i.e., serialization of handles works correctly, etc)
-    @Test
-    public void testJsonTable()
-    {
-        assertThat(query("""
-                         SELECT first, last
-                          FROM (SELECT '{"a" : [1, 2, 3], "b" : [4, 5, 6]}') t(json_col), JSON_TABLE(
-                              json_col,
-                              'lax $.a'
-                              COLUMNS(
-                                  first bigint PATH 'lax $[0]',
-                                  last bigint PATH 'lax $[last]'))
-                         """))
-                .matches("VALUES (BIGINT '1', BIGINT '3')");
+                .failure().hasMessage("line 3:8: Recursive language functions are not supported: a(integer):integer");
     }
 
     private static ZonedDateTime zonedDateTime(String value)

@@ -31,7 +31,6 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
 import io.trino.cache.NonEvictableLoadingCache;
-import io.trino.connector.CatalogProperties;
 import io.trino.connector.ConnectorServicesProvider;
 import io.trino.event.SplitMonitor;
 import io.trino.exchange.ExchangeManagerRegistry;
@@ -53,6 +52,7 @@ import io.trino.operator.scalar.JoniRegexpReplaceLambdaFunction;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spiller.LocalSpillManager;
@@ -338,6 +338,7 @@ public class SqlTaskManager
         }
         taskNotificationExecutor.shutdownNow();
         driverYieldExecutor.shutdownNow();
+        driverTimeoutExecutor.shutdownNow();
     }
 
     @Managed
@@ -534,13 +535,15 @@ public class SqlTaskManager
         fragment.map(PlanFragment::getActiveCatalogs)
                 .ifPresent(activeCatalogs -> {
                     Set<CatalogHandle> catalogHandles = activeCatalogs.stream()
-                            .map(CatalogProperties::getCatalogHandle)
+                            .map(CatalogProperties::catalogHandle)
                             .collect(toImmutableSet());
-                    if (sqlTask.setCatalogs(catalogHandles)) {
+                    sqlTask.setCatalogs(catalogHandles);
+                    if (!sqlTask.catalogsLoaded()) {
                         ReentrantReadWriteLock.ReadLock catalogInitLock = catalogsLock.readLock();
                         catalogInitLock.lock();
                         try {
                             connectorServicesProvider.ensureCatalogsLoaded(session, activeCatalogs);
+                            sqlTask.setCatalogsLoaded();
                         }
                         finally {
                             catalogInitLock.unlock();

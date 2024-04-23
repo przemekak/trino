@@ -24,7 +24,7 @@ import io.trino.server.testing.TestingTrinoServer;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -99,7 +99,7 @@ public class TestMemoryManager
                 .put("query.max-memory", "1kB")
                 .buildOrThrow();
 
-        try (DistributedQueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
+        try (QueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
             assertThatThrownBy(() -> queryRunner.execute("SELECT COUNT(*), clerk FROM orders GROUP BY clerk"))
                     .isInstanceOf(RuntimeException.class)
                     .hasMessageStartingWith("Query exceeded per-node memory limit of ");
@@ -169,7 +169,7 @@ public class TestMemoryManager
         }
     }
 
-    private void waitForQueryToBeKilled(DistributedQueryRunner queryRunner)
+    private void waitForQueryToBeKilled(QueryRunner queryRunner)
             throws InterruptedException
     {
         while (true) {
@@ -203,7 +203,7 @@ public class TestMemoryManager
     private void testNoLeak(@Language("SQL") String query)
             throws Exception
     {
-        Map<String, String> properties = ImmutableMap.of("task.verbose-stats", "true");
+        Map<String, String> properties = ImmutableMap.of("task.per-operator-cpu-timer-enabled", "true");
 
         try (DistributedQueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
             executor.submit(() -> queryRunner.execute(query)).get();
@@ -225,7 +225,7 @@ public class TestMemoryManager
     public void testClusterPools()
             throws Exception
     {
-        Map<String, String> properties = ImmutableMap.of("task.verbose-stats", "true");
+        Map<String, String> properties = ImmutableMap.of("task.per-operator-cpu-timer-enabled", "true");
 
         try (DistributedQueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
             // Reserve all the memory
@@ -369,9 +369,9 @@ public class TestMemoryManager
     public static DistributedQueryRunner createQueryRunner(Session session, Map<String, String> extraProperties)
             throws Exception
     {
-        return TpchQueryRunnerBuilder.builder()
+        return TpchQueryRunner.builder()
                 .amendSession(sessionBuilder -> Session.builder(session))
-                .setNodeCount(2)
+                .setWorkerCount(1)
                 .setExtraProperties(extraProperties)
                 .build();
     }

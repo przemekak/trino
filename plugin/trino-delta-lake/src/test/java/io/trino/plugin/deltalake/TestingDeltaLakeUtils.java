@@ -19,15 +19,18 @@ import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
 import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
 import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.testing.DistributedQueryRunner;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.spi.predicate.TupleDomain;
+import io.trino.testing.PlanTester;
+import io.trino.testing.QueryRunner;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
+import static com.google.common.base.Predicates.alwaysTrue;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
 import static io.trino.plugin.deltalake.DeltaTestingConnectorSession.SESSION;
@@ -37,12 +40,12 @@ public final class TestingDeltaLakeUtils
 {
     private TestingDeltaLakeUtils() {}
 
-    public static <T> T getConnectorService(LocalQueryRunner queryRunner, Class<T> clazz)
+    public static <T> T getConnectorService(PlanTester planTester, Class<T> clazz)
     {
-        return ((DeltaLakeConnector) queryRunner.getConnector(DELTA_CATALOG)).getInjector().getInstance(clazz);
+        return ((DeltaLakeConnector) planTester.getConnector(DELTA_CATALOG)).getInjector().getInstance(clazz);
     }
 
-    public static <T> T getConnectorService(DistributedQueryRunner queryRunner, Class<T> clazz)
+    public static <T> T getConnectorService(QueryRunner queryRunner, Class<T> clazz)
     {
         return ((DeltaLakeConnector) queryRunner.getCoordinator().getConnector(DELTA_CATALOG)).getInjector().getInstance(clazz);
     }
@@ -55,10 +58,10 @@ public final class TestingDeltaLakeUtils
         // force entries to have JSON serializable statistics
         transactionLogAccess.flushCache();
 
-        TableSnapshot snapshot = transactionLogAccess.loadSnapshot(SESSION, dummyTable, tableLocation);
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(snapshot, SESSION);
+        TableSnapshot snapshot = transactionLogAccess.loadSnapshot(SESSION, dummyTable, tableLocation, Optional.empty());
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, snapshot);
         ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, snapshot);
-        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(snapshot, metadataEntry, protocolEntry, SESSION)) {
+        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, snapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
             return addFileEntries.collect(toImmutableList());
         }
     }

@@ -24,9 +24,8 @@ import io.trino.spi.QueryId;
 import io.trino.spi.metrics.Count;
 import io.trino.spi.metrics.Metrics;
 import io.trino.testing.BaseConnectorTest;
-import io.trino.testing.DistributedQueryRunner;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.TestTable;
 import io.trino.tpch.TpchTable;
@@ -38,7 +37,6 @@ import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.ENABLE_LARGE_DYNAMIC_FILTERS;
-import static io.trino.plugin.memory.MemoryQueryRunner.createMemoryQueryRunner;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,9 +55,9 @@ public class TestMemoryConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createMemoryQueryRunner(
-                // Adjust DF limits to test edge cases
-                ImmutableMap.<String, String>builder()
+        return MemoryQueryRunner.builder()
+                .addExtraProperties(ImmutableMap.<String, String>builder()
+                        // Adjust DF limits to test edge cases
                         .put("dynamic-filtering.small.max-distinct-values-per-driver", "100")
                         .put("dynamic-filtering.small.range-row-limit-per-driver", "100")
                         .put("dynamic-filtering.large.max-distinct-values-per-driver", "100")
@@ -70,12 +68,18 @@ public class TestMemoryConnectorTest
                         .put("dynamic-filtering.large-partitioned.range-row-limit-per-driver", "100000")
                         // disable semi join to inner join rewrite to test semi join operators explicitly
                         .put("optimizer.rewrite-filtering-semi-join-to-inner-join", "false")
-                        .buildOrThrow(),
-                ImmutableSet.<TpchTable<?>>builder()
-                        .addAll(REQUIRED_TPCH_TABLES)
-                        .add(TpchTable.PART)
-                        .add(TpchTable.LINE_ITEM)
-                        .build());
+                        // enable CREATE FUNCTION
+                        .put("sql.path", "memory.functions")
+                        .put("sql.default-function-catalog", "memory")
+                        .put("sql.default-function-schema", "functions")
+                        .buildOrThrow())
+                .setInitialTables(
+                        ImmutableSet.<TpchTable<?>>builder()
+                                .addAll(REQUIRED_TPCH_TABLES)
+                                .add(TpchTable.PART)
+                                .add(TpchTable.LINE_ITEM)
+                                .build())
+                .build();
     }
 
     @Override
@@ -168,12 +172,12 @@ public class TestMemoryConnectorTest
 
     private Metrics collectCustomMetrics(String sql)
     {
-        DistributedQueryRunner runner = (DistributedQueryRunner) getQueryRunner();
-        MaterializedResultWithQueryId result = runner.executeWithQueryId(getSession(), sql);
+        QueryRunner runner = getQueryRunner();
+        MaterializedResultWithPlan result = runner.executeWithPlan(getSession(), sql);
         return runner
                 .getCoordinator()
                 .getQueryManager()
-                .getFullQueryInfo(result.getQueryId())
+                .getFullQueryInfo(result.queryId())
                 .getQueryStats()
                 .getOperatorSummaries()
                 .stream()
@@ -185,13 +189,13 @@ public class TestMemoryConnectorTest
     @Timeout(30)
     public void testPhysicalInputPositions()
     {
-        MaterializedResultWithQueryId result = getDistributedQueryRunner().executeWithQueryId(
+        MaterializedResultWithPlan result = getDistributedQueryRunner().executeWithPlan(
                 getSession(),
                 "SELECT * FROM lineitem JOIN tpch.tiny.supplier ON lineitem.suppkey = supplier.suppkey " +
                         "AND supplier.name = 'Supplier#000000001'");
-        assertThat(result.getResult().getRowCount()).isEqualTo(615);
+        assertThat(result.result().getRowCount()).isEqualTo(615);
 
-        OperatorStats probeStats = getScanOperatorStats(getDistributedQueryRunner(), result.getQueryId()).stream()
+        OperatorStats probeStats = getScanOperatorStats(getDistributedQueryRunner(), result.queryId()).stream()
                 .findFirst().orElseThrow(); // there should be two: one for lineitem and one for supplier
         assertThat(probeStats.getInputPositions()).isEqualTo(615);
         assertThat(probeStats.getPhysicalInputPositions()).isEqualTo(LINEITEM_COUNT);
@@ -465,10 +469,10 @@ public class TestMemoryConnectorTest
 
     private void assertDynamicFiltering(@Language("SQL") String selectQuery, Session session, int expectedRowCount, int... expectedOperatorRowsRead)
     {
-        MaterializedResultWithQueryId result = getDistributedQueryRunner().executeWithQueryId(session, selectQuery);
+        MaterializedResultWithPlan result = getDistributedQueryRunner().executeWithPlan(session, selectQuery);
 
-        assertThat(result.getResult().getRowCount()).isEqualTo(expectedRowCount);
-        assertThat(getOperatorRowsRead(getDistributedQueryRunner(), result.getQueryId())).isEqualTo(Ints.asList(expectedOperatorRowsRead));
+        assertThat(result.result().getRowCount()).isEqualTo(expectedRowCount);
+        assertThat(getOperatorRowsRead(getDistributedQueryRunner(), result.queryId())).isEqualTo(Ints.asList(expectedOperatorRowsRead));
     }
 
     private Session withLargeDynamicFilters(JoinDistributionType joinDistributionType)
@@ -478,7 +482,7 @@ public class TestMemoryConnectorTest
                 .build();
     }
 
-    private static List<Integer> getOperatorRowsRead(DistributedQueryRunner runner, QueryId queryId)
+    private static List<Integer> getOperatorRowsRead(QueryRunner runner, QueryId queryId)
     {
         return getScanOperatorStats(runner, queryId).stream()
                 .map(OperatorStats::getInputPositions)
@@ -486,7 +490,7 @@ public class TestMemoryConnectorTest
                 .collect(toImmutableList());
     }
 
-    private static List<OperatorStats> getScanOperatorStats(DistributedQueryRunner runner, QueryId queryId)
+    private static List<OperatorStats> getScanOperatorStats(QueryRunner runner, QueryId queryId)
     {
         QueryStats stats = runner.getCoordinator().getQueryManager().getFullQueryInfo(queryId).getQueryStats();
         return stats.getOperatorSummaries()
@@ -541,12 +545,15 @@ public class TestMemoryConnectorTest
 
         assertThat(query("SHOW SCHEMAS"))
                 .skippingTypesCheck()
-                .matches("VALUES 'default', 'information_schema', 'schema1', 'schema2'");
+                .containsAll("VALUES 'default', 'information_schema', 'schema1', 'schema2'");
         assertUpdate("CREATE TABLE schema1.nation AS SELECT * FROM tpch.tiny.nation WHERE nationkey % 2 = 0", "SELECT count(*) FROM nation WHERE MOD(nationkey, 2) = 0");
         assertUpdate("CREATE TABLE schema2.nation AS SELECT * FROM tpch.tiny.nation WHERE nationkey % 2 = 1", "SELECT count(*) FROM nation WHERE MOD(nationkey, 2) = 1");
 
         assertThat(computeScalar("SELECT count(*) FROM schema1.nation")).isEqualTo(13L);
         assertThat(computeScalar("SELECT count(*) FROM schema2.nation")).isEqualTo(12L);
+
+        assertUpdate("DROP SCHEMA schema2 CASCADE");
+        assertUpdate("DROP SCHEMA schema1 CASCADE");
     }
 
     @Test

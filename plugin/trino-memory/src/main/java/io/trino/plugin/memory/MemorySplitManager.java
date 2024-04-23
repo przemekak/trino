@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.trino.spi.connector.DynamicFilter.NOT_BLOCKED;
 import static java.util.Objects.requireNonNull;
 
@@ -57,7 +58,7 @@ public final class MemorySplitManager
     {
         MemoryTableHandle table = (MemoryTableHandle) handle;
 
-        List<MemoryDataFragment> dataFragments = metadata.getDataFragments(table.getId());
+        List<MemoryDataFragment> dataFragments = metadata.getDataFragments(table.id());
 
         long totalRows = 0;
 
@@ -67,14 +68,14 @@ public final class MemorySplitManager
             long rows = dataFragment.getRows();
             totalRows += rows;
 
-            if (table.getLimit().isPresent() && totalRows > table.getLimit().getAsLong()) {
-                rows -= totalRows - table.getLimit().getAsLong();
-                splits.add(new MemorySplit(table.getId(), 0, 1, dataFragment.getHostAddress(), rows, OptionalLong.of(rows)));
+            if (table.limit().isPresent() && totalRows > table.limit().getAsLong()) {
+                rows -= totalRows - table.limit().getAsLong();
+                splits.add(new MemorySplit(table.id(), 0, 1, dataFragment.getHostAddress(), rows, OptionalLong.of(rows)));
                 break;
             }
 
             for (int i = 0; i < splitsPerNode; i++) {
-                splits.add(new MemorySplit(table.getId(), i, splitsPerNode, dataFragment.getHostAddress(), rows, OptionalLong.empty()));
+                splits.add(new MemorySplit(table.id(), i, splitsPerNode, dataFragment.getHostAddress(), rows, OptionalLong.empty()));
             }
         }
 
@@ -128,6 +129,15 @@ public final class MemorySplitManager
                 return delegate.isFinished();
             }
             return false;
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("delay", delay)
+                    .add("delegate", delegate)
+                    .toString();
         }
     }
 }

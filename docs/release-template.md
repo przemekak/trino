@@ -60,6 +60,8 @@
 
 ## MySQL connector
 
+## OpenSearch connector
+
 ## Oracle connector
 
 ## Phoenix connector
@@ -77,6 +79,8 @@
 ## Redshift connector
 
 ## SingleStore connector
+
+## Snowflake connector
 
 ## SQL Server connector
 

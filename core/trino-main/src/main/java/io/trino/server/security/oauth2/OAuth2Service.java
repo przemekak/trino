@@ -174,9 +174,8 @@ public class OAuth2Service
             if (handlerState.isEmpty()) {
                 Response.ResponseBuilder builder = Response
                         .seeOther(URI.create(UI_LOCATION))
-                        .cookie(
-                                OAuthWebUiCookie.create(tokenPairSerializer.serialize(fromOAuth2Response(oauth2Response)), cookieExpirationTime),
-                                NonceCookie.delete());
+                        .cookie(OAuthWebUiCookie.create(tokenPairSerializer.serialize(fromOAuth2Response(oauth2Response)), cookieExpirationTime))
+                        .cookie(NonceCookie.delete());
                 if (oauth2Response.getIdToken().isPresent()) {
                     builder.cookie(OAuthIdTokenCookie.create(oauth2Response.getIdToken().get(), cookieExpirationTime));
                 }
@@ -244,17 +243,12 @@ public class OAuth2Service
 
     private static String getOAuth2ErrorMessage(String errorCode)
     {
-        switch (errorCode) {
-            case "access_denied":
-                return "OAuth2 server denied the login";
-            case "unauthorized_client":
-                return "OAuth2 server does not allow request from this Trino server";
-            case "server_error":
-                return "OAuth2 server had a failure";
-            case "temporarily_unavailable":
-                return "OAuth2 server is temporarily unavailable";
-            default:
-                return "OAuth2 unknown error code: " + errorCode;
-        }
+        return switch (errorCode) {
+            case "access_denied" -> "OAuth2 server denied the login";
+            case "unauthorized_client" -> "OAuth2 server does not allow request from this Trino server";
+            case "server_error" -> "OAuth2 server had a failure";
+            case "temporarily_unavailable" -> "OAuth2 server is temporarily unavailable";
+            default -> "OAuth2 unknown error code: " + errorCode;
+        };
     }
 }

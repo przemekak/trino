@@ -16,7 +16,6 @@ package io.trino.plugin.iceberg;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.hive.TrinoViewHiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
@@ -26,6 +25,7 @@ import io.trino.plugin.iceberg.catalog.TrinoCatalog;
 import io.trino.plugin.iceberg.catalog.file.FileMetastoreTableOperationsProvider;
 import io.trino.plugin.iceberg.catalog.hms.TrinoHiveCatalog;
 import io.trino.plugin.tpch.TpchPlugin;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.type.TestingTypeManager;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.trino.SystemSessionProperties.INITIAL_SPLITS_PER_NODE;
 import static io.trino.SystemSessionProperties.MAX_DRIVERS_PER_TASK;
 import static io.trino.SystemSessionProperties.TASK_CONCURRENCY;
 import static io.trino.SystemSessionProperties.TASK_MAX_WRITER_COUNT;
@@ -70,11 +71,12 @@ public class TestIcebergOrcMetricsCollection
                 .setSystemProperty(TASK_CONCURRENCY, "1")
                 .setSystemProperty(TASK_MIN_WRITER_COUNT, "1")
                 .setSystemProperty(TASK_MAX_WRITER_COUNT, "1")
+                .setSystemProperty(INITIAL_SPLITS_PER_NODE, "1")
                 .setSystemProperty(MAX_DRIVERS_PER_TASK, "1")
                 .setCatalogSessionProperty("iceberg", "orc_string_statistics_limit", Integer.MAX_VALUE + "B")
                 .build();
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(session)
-                .setNodeCount(1)
+        QueryRunner queryRunner = DistributedQueryRunner.builder(session)
+                .setWorkerCount(0)
                 .build();
 
         File baseDir = queryRunner.getCoordinator().getBaseDataDir().resolve("iceberg_data").toFile();

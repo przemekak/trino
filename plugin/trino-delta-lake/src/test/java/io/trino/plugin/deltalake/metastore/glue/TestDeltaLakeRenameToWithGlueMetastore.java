@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.deltalake.DeltaLakeQueryRunner;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -25,6 +24,7 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.nio.file.Path;
 
+import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
@@ -35,7 +35,6 @@ public class TestDeltaLakeRenameToWithGlueMetastore
         extends AbstractTestQueryFramework
 {
     protected static final String SCHEMA = "test_delta_lake_rename_to_with_glue_" + randomNameSuffix();
-    protected static final String CATALOG_NAME = "test_delta_lake_rename_to_with_glue";
 
     private Path schemaLocation;
 
@@ -44,12 +43,11 @@ public class TestDeltaLakeRenameToWithGlueMetastore
             throws Exception
     {
         Session deltaLakeSession = testSessionBuilder()
-                .setCatalog(CATALOG_NAME)
+                .setCatalog(DELTA_CATALOG)
                 .setSchema(SCHEMA)
                 .build();
 
-        DistributedQueryRunner queryRunner = DeltaLakeQueryRunner.builder(deltaLakeSession)
-                .setCatalogName(CATALOG_NAME)
+        QueryRunner queryRunner = DeltaLakeQueryRunner.builder(deltaLakeSession)
                 .setDeltaProperties(ImmutableMap.of("hive.metastore", "glue"))
                 .build();
         schemaLocation = queryRunner.getCoordinator().getBaseDataDir().resolve("delta_lake_data");

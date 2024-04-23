@@ -47,7 +47,6 @@ import org.apache.parquet.internal.column.columnindex.ColumnIndex;
 import org.apache.parquet.internal.filter2.columnindex.ColumnIndexStore;
 import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.api.Binary;
-import org.apache.parquet.schema.ColumnOrder;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimestampLogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
@@ -64,6 +63,7 @@ import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.trino.parquet.ParquetMetadataConverter.isMinMaxStatsSupported;
 import static io.trino.parquet.ParquetTimestampUtils.decodeInt64Timestamp;
 import static io.trino.parquet.ParquetTimestampUtils.decodeInt96Timestamp;
 import static io.trino.parquet.ParquetTypeUtils.getShortDecimalValue;
@@ -210,7 +210,7 @@ public class TupleDomainParquetPredicate
             }
 
             // ParquetMetadataConverter#fromParquetColumnIndex returns null if the parquet primitive type does not support min/max stats
-            if (!isColumnIndexStatsSupported(column.getPrimitiveType())) {
+            if (!isMinMaxStatsSupported(column.getPrimitiveType())) {
                 continue;
             }
             ColumnIndex columnIndex = columnIndexStore.getColumnIndex(ColumnPath.get(column.getPath()));
@@ -392,10 +392,13 @@ public class TupleDomainParquetPredicate
             }
             else {
                 for (int i = 0; i < minimums.size(); i++) {
-                    Int128 min = Int128.fromBigEndian(((Slice) minimums.get(i)).getBytes());
-                    Int128 max = Int128.fromBigEndian(((Slice) maximums.get(i)).getBytes());
+                    Object min = minimums.get(i);
+                    Object max = maximums.get(i);
 
-                    rangesBuilder.addRangeInclusive(min, max);
+                    Int128 minValue = min instanceof Slice ? Int128.fromBigEndian(((Slice) min).getBytes()) : Int128.valueOf(asLong(min));
+                    Int128 maxValue = max instanceof Slice ? Int128.fromBigEndian(((Slice) max).getBytes()) : Int128.valueOf(asLong(max));
+
+                    rangesBuilder.addRangeInclusive(minValue, maxValue);
                 }
             }
 
@@ -692,7 +695,7 @@ public class TupleDomainParquetPredicate
             }
 
             // ParquetMetadataConverter#fromParquetColumnIndex returns null if the parquet primitive type does not support min/max stats
-            if (!isColumnIndexStatsSupported(column.getPrimitiveType())) {
+            if (!isMinMaxStatsSupported(column.getPrimitiveType())) {
                 continue;
             }
 
@@ -807,11 +810,11 @@ public class TupleDomainParquetPredicate
         {
             return switch (primitiveType.getPrimitiveTypeName()) {
                 case BOOLEAN -> throw new ParquetDecodingException("Dictionary encoding does not support: " + primitiveType.getPrimitiveTypeName());
-                case INT32 -> (i) -> dictionary.decodeToInt(i);
-                case INT64 -> (i) -> dictionary.decodeToLong(i);
-                case FLOAT -> (i) -> dictionary.decodeToFloat(i);
-                case DOUBLE -> (i) -> dictionary.decodeToDouble(i);
-                case FIXED_LEN_BYTE_ARRAY, BINARY, INT96 -> (i) -> dictionary.decodeToSlice(i);
+                case INT32 -> dictionary::decodeToInt;
+                case INT64 -> dictionary::decodeToLong;
+                case FLOAT -> dictionary::decodeToFloat;
+                case DOUBLE -> dictionary::decodeToDouble;
+                case FIXED_LEN_BYTE_ARRAY, BINARY, INT96 -> dictionary::decodeToSlice;
             };
         }
     }
@@ -827,11 +830,5 @@ public class TupleDomainParquetPredicate
         {
             super(columnPath, Integer.class);
         }
-    }
-
-    // Copy of org.apache.parquet.format.converter.ParquetMetadataConverter#isMinMaxStatsSupported
-    private static boolean isColumnIndexStatsSupported(PrimitiveType type)
-    {
-        return type.columnOrder().getColumnOrderName() == ColumnOrder.ColumnOrderName.TYPE_DEFINED_ORDER;
     }
 }

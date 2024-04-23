@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeColumnMetadata;
+import io.trino.plugin.deltalake.DeltaLakeTable;
 import io.trino.plugin.deltalake.TestingComplexTypeManager;
 import io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.ColumnMappingMode;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeJsonFileStatistics;
@@ -111,7 +112,7 @@ public class TestDeltaLakeSchemaSupport
     private void testSinglePrimitiveFieldSchema(String json, ColumnMetadata metadata)
     {
         List<ColumnMetadata> schema = DeltaLakeSchemaSupport.getColumnMetadata(json, typeManager, ColumnMappingMode.NONE).stream()
-                .map(DeltaLakeColumnMetadata::getColumnMetadata)
+                .map(DeltaLakeColumnMetadata::columnMetadata)
                 .collect(toImmutableList());
         assertThat(schema.size()).isEqualTo(1);
         assertThat(schema.get(0)).isEqualTo(metadata);
@@ -141,7 +142,7 @@ public class TestDeltaLakeSchemaSupport
         String json = Files.readString(Path.of(expected.toURI()));
 
         List<ColumnMetadata> schema = DeltaLakeSchemaSupport.getColumnMetadata(json, typeManager, ColumnMappingMode.NONE).stream()
-                .map(DeltaLakeColumnMetadata::getColumnMetadata)
+                .map(DeltaLakeColumnMetadata::columnMetadata)
                 .collect(toImmutableList());
         assertThat(schema.size()).isEqualTo(5);
         // asserting on the string representations, since they're more readable
@@ -235,14 +236,12 @@ public class TestDeltaLakeSchemaSupport
         ObjectMapper objectMapper = new ObjectMapper();
 
         List<DeltaLakeColumnHandle> columnHandles = ImmutableList.of(arrayColumn, structColumn, mapColumn);
-        ImmutableList.Builder<String> columnNames = ImmutableList.builderWithExpectedSize(columnHandles.size());
-        ImmutableMap.Builder<String, Object> columnTypes = ImmutableMap.builderWithExpectedSize(columnHandles.size());
+        DeltaLakeTable.Builder deltaTable = DeltaLakeTable.builder();
         for (DeltaLakeColumnHandle column : columnHandles) {
-            columnNames.add(column.getColumnName());
-            columnTypes.put(column.getColumnName(), serializeColumnType(ColumnMappingMode.NONE, new AtomicInteger(), column.getBaseType()));
+            deltaTable.addColumn(column.getColumnName(), serializeColumnType(ColumnMappingMode.NONE, new AtomicInteger(), column.getBaseType()), true, null, ImmutableMap.of());
         }
 
-        String jsonEncoding = serializeSchemaAsJson(columnNames.build(), columnTypes.buildOrThrow(), ImmutableMap.of(), ImmutableMap.of(), ImmutableMap.of());
+        String jsonEncoding = serializeSchemaAsJson(deltaTable.build());
         assertThat(objectMapper.readTree(jsonEncoding)).isEqualTo(objectMapper.readTree(expected));
     }
 
@@ -254,18 +253,16 @@ public class TestDeltaLakeSchemaSupport
         String json = Files.readString(Path.of(expected.toURI()));
 
         List<ColumnMetadata> schema = DeltaLakeSchemaSupport.getColumnMetadata(json, typeManager, ColumnMappingMode.NONE).stream()
-                .map(DeltaLakeColumnMetadata::getColumnMetadata)
+                .map(DeltaLakeColumnMetadata::columnMetadata)
                 .collect(toImmutableList());
 
-        ImmutableList.Builder<String> columnNames = ImmutableList.builderWithExpectedSize(schema.size());
-        ImmutableMap.Builder<String, Object> columnTypes = ImmutableMap.builderWithExpectedSize(schema.size());
+        DeltaLakeTable.Builder deltaTable = DeltaLakeTable.builder();
         for (ColumnMetadata column : schema) {
-            columnNames.add(column.getName());
-            columnTypes.put(column.getName(), serializeColumnType(ColumnMappingMode.NONE, new AtomicInteger(), column.getType()));
+            deltaTable.addColumn(column.getName(), serializeColumnType(ColumnMappingMode.NONE, new AtomicInteger(), column.getType()), true, null, ImmutableMap.of());
         }
 
         ObjectMapper objectMapper = new ObjectMapper();
-        String jsonEncoding = serializeSchemaAsJson(columnNames.build(), columnTypes.buildOrThrow(), ImmutableMap.of(), ImmutableMap.of(), ImmutableMap.of());
+        String jsonEncoding = serializeSchemaAsJson(deltaTable.build());
         assertThat(objectMapper.readTree(jsonEncoding)).isEqualTo(objectMapper.readTree(expected));
     }
 

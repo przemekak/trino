@@ -14,9 +14,12 @@
 package io.trino.plugin.base.security;
 
 import com.google.common.collect.ImmutableSet;
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.function.SchemaFunctionName;
@@ -89,6 +92,11 @@ public class AllowAllSystemAccessControl
     }
 
     @Override
+    public void checkCanExecuteQuery(Identity identity, QueryId queryId)
+    {
+    }
+
+    @Override
     public void checkCanViewQueryOwnedBy(Identity identity, Identity queryOwner)
     {
     }
@@ -106,6 +114,11 @@ public class AllowAllSystemAccessControl
 
     @Override
     public void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
+    {
+    }
+
+    @Override
+    public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
     {
     }
 
@@ -371,6 +384,21 @@ public class AllowAllSystemAccessControl
     }
 
     @Override
+    public void checkCanGrantEntityPrivilege(SystemSecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee, boolean grantOption)
+    {
+    }
+
+    @Override
+    public void checkCanDenyEntityPrivilege(SystemSecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee)
+    {
+    }
+
+    @Override
+    public void checkCanRevokeEntityPrivilege(SystemSecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal revokee, boolean grantOption)
+    {
+    }
+
+    @Override
     public void checkCanShowRoles(SystemSecurityContext context)
     {
     }
@@ -475,4 +503,7 @@ public class AllowAllSystemAccessControl
     {
         return Optional.empty();
     }
+
+    @Override
+    public void shutdown() {}
 }

@@ -16,9 +16,9 @@ package io.trino.execution;
 import com.google.common.collect.ImmutableMap;
 import io.trino.client.StageStats;
 import io.trino.client.StatementStats;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.testing.QueryRunner;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.junit.jupiter.api.Test;
 
 import static io.trino.testing.TestingSession.testSessionBuilder;
@@ -30,9 +30,9 @@ public class TestStatementStats
     public void testUniqueNodeCounts()
             throws Exception
     {
-        try (DistributedQueryRunner queryRunner = TpchQueryRunnerBuilder.builder()
+        try (QueryRunner queryRunner = TpchQueryRunner.builder()
                 .setCoordinatorProperties(ImmutableMap.of("query-manager.required-workers", "2"))
-                .setNodeCount(2)
+                .setWorkerCount(1)
                 .build()) {
             MaterializedResult result = queryRunner.execute(testSessionBuilder().setCatalog("tpch").setSchema("tiny").build(), "SELECT COUNT(*) from lineitem LIMIT 10");
 

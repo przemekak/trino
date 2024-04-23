@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
-import static com.google.common.base.Strings.repeat;
 import static io.trino.sql.testing.TreeAssertions.assertFormattedSql;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -220,6 +219,9 @@ public class TestStatementBuilder
         printStatement("alter table foo alter column x set data type bigint");
         printStatement("alter table a.b.c alter column x set data type bigint");
 
+        printStatement("alter table foo alter column x drop not null");
+        printStatement("alter table a.b.c alter column x drop not null");
+
         printStatement("alter materialized view foo set properties a='1'");
         printStatement("alter materialized view a.b.c set properties a=true, b=123, c='x'");
         printStatement("alter materialized view a.b.c set properties a=default, b=123");
@@ -390,7 +392,7 @@ public class TestStatementBuilder
         println("");
         assertFormattedSql(SQL_PARSER, statement);
 
-        println(repeat("=", 60));
+        println("=".repeat(60));
         println("");
     }
 

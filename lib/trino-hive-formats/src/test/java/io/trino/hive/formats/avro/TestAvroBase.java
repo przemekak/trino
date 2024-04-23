@@ -15,7 +15,6 @@ package io.trino.hive.formats.avro;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import com.google.common.primitives.Bytes;
 import com.google.common.primitives.Longs;
 import io.airlift.slice.Slices;
@@ -399,7 +398,7 @@ public abstract class TestAvroBase
             throws IOException
     {
         try (DataFileWriter<GenericRecord> fileWriter = new DataFileWriter<>(new GenericDatumWriter<>())) {
-            fileWriter.create(schema, trinoLocalFilesystem.newOutputFile(location).createOrOverwrite());
+            fileWriter.create(schema, trinoLocalFilesystem.newOutputFile(location).create());
             for (GenericRecord genericRecord : records) {
                 fileWriter.append(genericRecord);
             }
@@ -413,7 +412,7 @@ public abstract class TestAvroBase
         Iterator<Object> randomData = new RandomData(schema, count).iterator();
         Location tempFile = createLocalTempLocation();
         try (DataFileWriter<GenericRecord> fileWriter = new DataFileWriter<>(new GenericDatumWriter<>())) {
-            fileWriter.create(schema, trinoLocalFilesystem.newOutputFile(tempFile).createOrOverwrite());
+            fileWriter.create(schema, trinoLocalFilesystem.newOutputFile(tempFile).create());
             while (randomData.hasNext()) {
                 fileWriter.append((GenericRecord) randomData.next());
             }
@@ -449,7 +448,7 @@ public abstract class TestAvroBase
         for (Schema.Field field : reorder(schema.getFields())) {
             if (field.schema().getType() == Schema.Type.ENUM) {
                 fieldAssembler = fieldAssembler.name(field.name())
-                        .type(Schema.createEnum(field.schema().getName(), field.schema().getDoc(), field.schema().getNamespace(), Lists.reverse(field.schema().getEnumSymbols())))
+                        .type(Schema.createEnum(field.schema().getName(), field.schema().getDoc(), field.schema().getNamespace(), field.schema().getEnumSymbols().reversed()))
                         .noDefault();
             }
             else if (field.schema().getType() == Schema.Type.UNION) {

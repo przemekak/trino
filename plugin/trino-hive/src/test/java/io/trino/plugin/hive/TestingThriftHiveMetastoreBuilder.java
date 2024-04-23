@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hive;
 
-import com.google.common.net.HostAndPort;
 import io.airlift.units.Duration;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
@@ -27,6 +26,7 @@ import io.trino.plugin.hive.metastore.thrift.ThriftMetastoreConfig;
 import io.trino.plugin.hive.metastore.thrift.TokenAwareMetastoreClientFactory;
 import io.trino.plugin.hive.metastore.thrift.UgiBasedMetastoreClientFactory;
 
+import java.net.URI;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -40,7 +40,6 @@ import static java.util.concurrent.Executors.newFixedThreadPool;
 public final class TestingThriftHiveMetastoreBuilder
 {
     private TokenAwareMetastoreClientFactory tokenAwareMetastoreClientFactory;
-    private HiveConfig hiveConfig = new HiveConfig();
     private ThriftMetastoreConfig thriftMetastoreConfig = new ThriftMetastoreConfig();
     private TrinoFileSystemFactory fileSystemFactory = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS);
 
@@ -51,7 +50,15 @@ public final class TestingThriftHiveMetastoreBuilder
 
     private TestingThriftHiveMetastoreBuilder() {}
 
-    public TestingThriftHiveMetastoreBuilder metastoreClient(HostAndPort address, Duration timeout)
+    public TestingThriftHiveMetastoreBuilder metastoreClient(URI metastoreUri)
+    {
+        requireNonNull(metastoreUri, "metastoreUri is null");
+        checkState(tokenAwareMetastoreClientFactory == null, "Metastore client already set");
+        tokenAwareMetastoreClientFactory = new TestingTokenAwareMetastoreClientFactory(HiveTestUtils.SOCKS_PROXY, metastoreUri);
+        return this;
+    }
+
+    public TestingThriftHiveMetastoreBuilder metastoreClient(URI address, Duration timeout)
     {
         requireNonNull(address, "address is null");
         requireNonNull(timeout, "timeout is null");
@@ -60,19 +67,11 @@ public final class TestingThriftHiveMetastoreBuilder
         return this;
     }
 
-    public TestingThriftHiveMetastoreBuilder metastoreClient(HostAndPort address, MetastoreClientAdapterProvider metastoreClientAdapterProvider)
+    public TestingThriftHiveMetastoreBuilder metastoreClient(URI uri, MetastoreClientAdapterProvider metastoreClientAdapterProvider)
     {
-        requireNonNull(address, "address is null");
+        requireNonNull(uri, "uri is null");
         checkState(tokenAwareMetastoreClientFactory == null, "Metastore client already set");
-        tokenAwareMetastoreClientFactory = new TestingTokenAwareMetastoreClientFactory(HiveTestUtils.SOCKS_PROXY, address, TIMEOUT, metastoreClientAdapterProvider);
-        return this;
-    }
-
-    public TestingThriftHiveMetastoreBuilder metastoreClient(HostAndPort address)
-    {
-        requireNonNull(address, "address is null");
-        checkState(tokenAwareMetastoreClientFactory == null, "Metastore client already set");
-        tokenAwareMetastoreClientFactory = new TestingTokenAwareMetastoreClientFactory(HiveTestUtils.SOCKS_PROXY, address);
+        tokenAwareMetastoreClientFactory = new TestingTokenAwareMetastoreClientFactory(HiveTestUtils.SOCKS_PROXY, uri, TIMEOUT, metastoreClientAdapterProvider);
         return this;
     }
 
@@ -81,12 +80,6 @@ public final class TestingThriftHiveMetastoreBuilder
         requireNonNull(client, "client is null");
         checkState(tokenAwareMetastoreClientFactory == null, "Metastore client already set");
         tokenAwareMetastoreClientFactory = token -> client;
-        return this;
-    }
-
-    public TestingThriftHiveMetastoreBuilder hiveConfig(HiveConfig hiveConfig)
-    {
-        this.hiveConfig = requireNonNull(hiveConfig, "hiveConfig is null");
         return this;
     }
 
@@ -108,7 +101,6 @@ public final class TestingThriftHiveMetastoreBuilder
         ThriftHiveMetastoreFactory metastoreFactory = new ThriftHiveMetastoreFactory(
                 new UgiBasedMetastoreClientFactory(tokenAwareMetastoreClientFactory, SIMPLE_USER_NAME_PROVIDER, thriftMetastoreConfig),
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
-                hiveConfig.isTranslateHiveViews(),
                 thriftMetastoreConfig,
                 fileSystemFactory,
                 newFixedThreadPool(thriftMetastoreConfig.getWriteStatisticsThreads()));

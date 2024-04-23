@@ -19,6 +19,7 @@ import io.airlift.log.Logging;
 import io.trino.Session;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
+import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
 
 import java.util.HashMap;
@@ -34,14 +35,14 @@ public final class ScyllaQueryRunner
 {
     private ScyllaQueryRunner() {}
 
-    public static DistributedQueryRunner createScyllaQueryRunner(
+    public static QueryRunner createScyllaQueryRunner(
             TestingScyllaServer server,
             Map<String, String> extraProperties,
             Map<String, String> connectorProperties,
             Iterable<TpchTable<?>> tables)
             throws Exception
     {
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(createSession("tpch"))
+        QueryRunner queryRunner = DistributedQueryRunner.builder(createSession("tpch"))
                 .setExtraProperties(extraProperties)
                 .build();
 
@@ -61,7 +62,7 @@ public final class ScyllaQueryRunner
             queryRunner.createCatalog("cassandra", "cassandra", connectorProperties);
 
             createKeyspace(server.getSession(), "tpch");
-            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession("tpch"), tables);
+            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, tables);
             for (TpchTable<?> table : tables) {
                 server.refreshSizeEstimates("tpch", table.getTableName());
             }
@@ -86,7 +87,7 @@ public final class ScyllaQueryRunner
     {
         Logging.initialize();
 
-        DistributedQueryRunner queryRunner = createScyllaQueryRunner(
+        QueryRunner queryRunner = createScyllaQueryRunner(
                 new TestingScyllaServer(),
                 ImmutableMap.of("http-server.http.port", "8080"),
                 ImmutableMap.of(),

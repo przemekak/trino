@@ -27,7 +27,7 @@ import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.sql.planner.LogicalPlanner.Stage;
 import io.trino.sql.planner.optimizations.PlanOptimizer;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import io.trino.tpch.Customer;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -87,7 +87,7 @@ public class BenchmarkPlanner
         @Param
         private Queries queries = TPCH;
 
-        private LocalQueryRunner queryRunner;
+        private PlanTester planTester;
         private Session session;
 
         @Setup
@@ -100,14 +100,14 @@ public class BenchmarkPlanner
                     .setSchema("sf1")
                     .build();
 
-            queryRunner = LocalQueryRunner.create(session);
-            queryRunner.installPlugin(new TpchPlugin());
-            queryRunner.createCatalog(tpch, "tpch", ImmutableMap.<String, String>builder()
+            planTester = PlanTester.create(session);
+            planTester.installPlugin(new TpchPlugin());
+            planTester.createCatalog(tpch, "tpch", ImmutableMap.<String, String>builder()
                     .put(TPCH_SPLITS_PER_NODE, "4")
                     .put(TPCH_COLUMN_NAMING_PROPERTY, ColumnNaming.STANDARD.name())
                     .buildOrThrow());
 
-            queryRunner.installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
+            planTester.installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
                     .withGetTableHandle((session1, schemaTableName) -> new MockConnectorTableHandle(schemaTableName))
                     .withGetColumns(name -> {
                         if (!name.equals(TABLE)) {
@@ -118,25 +118,25 @@ public class BenchmarkPlanner
                                 .collect(toImmutableList());
                     })
                     .build()));
-            queryRunner.createCatalog("mock", "mock", ImmutableMap.of());
+            planTester.createCatalog("mock", "mock", ImmutableMap.of());
         }
 
         @TearDown
         public void tearDown()
         {
-            queryRunner.close();
-            queryRunner = null;
+            planTester.close();
+            planTester = null;
         }
     }
 
     @Benchmark
     public List<Plan> plan(BenchmarkData benchmarkData)
     {
-        LocalQueryRunner queryRunner = benchmarkData.queryRunner;
-        List<PlanOptimizer> planOptimizers = queryRunner.getPlanOptimizers(false);
+        PlanTester planTester = benchmarkData.planTester;
+        List<PlanOptimizer> planOptimizers = planTester.getPlanOptimizers(false);
         PlanOptimizersStatsCollector planOptimizersStatsCollector = createPlanOptimizersStatsCollector();
-        return queryRunner.inTransaction(transactionSession -> benchmarkData.queries.getQueries().stream()
-                .map(query -> queryRunner.createPlan(transactionSession, query, planOptimizers, benchmarkData.stage, NOOP, planOptimizersStatsCollector))
+        return planTester.inTransaction(transactionSession -> benchmarkData.queries.getQueries().stream()
+                .map(query -> planTester.createPlan(transactionSession, query, planOptimizers, benchmarkData.stage, NOOP, planOptimizersStatsCollector))
                 .collect(toImmutableList()));
     }
 
@@ -165,7 +165,7 @@ public class BenchmarkPlanner
                         .collect(joining(", ", "(", ")")))),
         // 86k columns present in the query with 500 group bys
         MULTIPLE_GROUP_BY(() -> ImmutableList.of("WITH " + IntStream.rangeClosed(0, 500)
-                .mapToObj(i -> """
+                .mapToObj("""
                         t%s AS (
                         SELECT * FROM lineitem a
                         JOIN tiny.lineitem b ON a.l_orderkey = b.l_orderkey
@@ -173,8 +173,7 @@ public class BenchmarkPlanner
                         JOIN sf100.lineitem d ON a.l_orderkey = d.l_orderkey
                         JOIN sf1000.lineitem e ON a.l_orderkey = e.l_orderkey
                         WHERE a.l_orderkey = (SELECT max(o_orderkey) FROM orders GROUP BY o_orderkey))
-                        """
-                        .formatted(i))
+                        """::formatted)
                 .collect(joining(",")) +
                 "SELECT 1 FROM lineitem")),
         GROUP_BY_WITH_MANY_REFERENCED_COLUMNS(() -> ImmutableList.of("SELECT * FROM mock.default.t GROUP BY " +

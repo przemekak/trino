@@ -4,21 +4,6 @@
 <img src="../_static/img/hive.png" class="connector-logo">
 ```
 
-```{toctree}
-:hidden: true
-:maxdepth: 1
-
-Metastores <metastores>
-Security <hive-security>
-Amazon S3 <hive-s3>
-Azure Storage <hive-azure>
-Google Cloud Storage <hive-gcs-tutorial>
-IBM Cloud Object Storage <hive-cos>
-Storage Caching <hive-caching>
-Alluxio <hive-alluxio>
-Object storage file formats <object-storage-file-formats>
-```
-
 The Hive connector allows querying data stored in an
 [Apache Hive](https://hive.apache.org/)
 data warehouse. Hive is a combination of three components:
@@ -42,14 +27,8 @@ The Hive connector requires a
 implementation of the Hive metastore, such as
 {ref}`AWS Glue <hive-glue-metastore>`.
 
-Apache Hadoop HDFS 2.x and 3.x are supported.
-
-Many distributed storage systems including HDFS,
-{doc}`Amazon S3 <hive-s3>` or S3-compatible systems,
-[Google Cloud Storage](hive-gcs-tutorial),
-{doc}`Azure Storage <hive-azure>`, and
-{doc}`IBM Cloud Object Storage<hive-cos>` can be queried with the Hive
-connector.
+Many [distributed storage systems](hive-file-system-configuration) can be
+queried with the Hive connector.
 
 The coordinator and all workers must have network access to the Hive metastore
 and the storage system. Hive metastore access with the Thrift protocol defaults
@@ -68,6 +47,7 @@ configured using file format configuration properties per catalog:
 - CSV (using org.apache.hadoop.hive.serde2.OpenCSVSerde)
 - TextFile
 
+(hive-configuration)=
 ## General configuration
 
 To configure the Hive connector, create a catalog properties file
@@ -100,55 +80,7 @@ with a different name, making sure it ends in `.properties`. For
 example, if you name the property file `sales.properties`, Trino
 creates a catalog named `sales` using the configured connector.
 
-### HDFS configuration
-
-For basic setups, Trino configures the HDFS client automatically and
-does not require any configuration files. In some cases, such as when using
-federated HDFS or NameNode high availability, it is necessary to specify
-additional HDFS client options in order to access your HDFS cluster. To do so,
-add the `hive.config.resources` property to reference your HDFS config files:
-
-```text
-hive.config.resources=/etc/hadoop/conf/core-site.xml,/etc/hadoop/conf/hdfs-site.xml
-```
-
-Only specify additional configuration files if necessary for your setup.
-We recommend reducing the configuration files to have the minimum
-set of required properties, as additional properties may cause problems.
-
-The configuration files must exist on all Trino nodes. If you are
-referencing existing Hadoop config files, make sure to copy them to
-any Trino nodes that are not running Hadoop.
-
-### HDFS username and permissions
-
-Before running any `CREATE TABLE` or `CREATE TABLE AS` statements
-for Hive tables in Trino, you must check that the user Trino is
-using to access HDFS has access to the Hive warehouse directory. The Hive
-warehouse directory is specified by the configuration variable
-`hive.metastore.warehouse.dir` in `hive-site.xml`, and the default
-value is `/user/hive/warehouse`.
-
-When not using Kerberos with HDFS, Trino accesses HDFS using the
-OS user of the Trino process. For example, if Trino is running as
-`nobody`, it accesses HDFS as `nobody`. You can override this
-username by setting the `HADOOP_USER_NAME` system property in the
-Trino {ref}`jvm-config`, replacing `hdfs_user` with the
-appropriate username:
-
-```text
--DHADOOP_USER_NAME=hdfs_user
-```
-
-The `hive` user generally works, since Hive is often started with
-the `hive` user and this user has access to the Hive warehouse.
-
-Whenever you change the user Trino is using to access HDFS, remove
-`/tmp/presto-*` on HDFS, as the new user may not have access to
-the existing temporary directories.
-
 (hive-configuration-properties)=
-
 ### Hive general configuration properties
 
 The following table lists general configuration properties for the Hive
@@ -162,11 +94,7 @@ Hive connector documentation.
 * - Property Name
   - Description
   - Default
-* - `hive.config.resources`
-  - An optional comma-separated list of HDFS configuration files. These files
-    must exist on the machines running Trino. Only specify this if absolutely
-    necessary to access HDFS. Example: `/etc/hdfs-site.xml`
-  -
+
 * - `hive.recursive-directories`
   - Enable reading data from subdirectories of table or partition locations. If
     disabled, subdirectories are ignored. This is equivalent to the
@@ -232,16 +160,6 @@ Hive connector documentation.
 * - `hive.max-partitions-per-scan`
   - Maximum number of partitions for a single table scan.
   - 1,000,000
-* - `hive.dfs.replication`
-  - Hadoop file system replication factor.
-  -
-* - `hive.security`
-  - See [](/connector/hive-security).
-  -
-* - `security.config-file`
-  - Path of config file to use when `hive.security=file`. See
-    [](catalog-file-based-access-control) for details.
-  -
 * - `hive.non-managed-table-writes-enabled`
   - Enable writes to non-managed (external) Hive tables.
   - `false`
@@ -277,8 +195,10 @@ Hive connector documentation.
   - JVM default
 * - `hive.timestamp-precision`
   - Specifies the precision to use for Hive columns of type `TIMESTAMP`.
-    Possible values are `MILLISECONDS`, `MICROSECONDS` and `NANOSECONDS`. Values
-    with higher precision than configured are rounded.
+    Possible values are `MILLISECONDS`, `MICROSECONDS` and `NANOSECONDS`. 
+    Values with higher precision than configured are rounded. The equivalent
+    [catalog session property](/sql/set-session) is `timestamp_precision` for
+    session specific use.
   - `MILLISECONDS`
 * - `hive.temporary-staging-directory-enabled`
   - Controls whether the temporary staging directory configured at
@@ -306,14 +226,6 @@ Hive connector documentation.
   - Improve parallelism of partitioned and bucketed table writes. When disabled,
     the number of writing threads is limited to number of buckets.
   - `true`
-* - `hive.fs.new-directory-permissions`
-  - Controls the permissions set on new directories created for tables. It must
-    be either 'skip' or an octal number, with a leading 0. If set to `skip`,
-    permissions of newly created directories will not be set by Trino.
-  - `0777`
-* - `hive.fs.cache.max-size`
-  - Maximum number of cached file system objects.
-  - 1000
 * - `hive.query-partition-filter-required`
   - Set to `true` to force a query to use a partition filter. You can use the
     `query_partition_filter_required` catalog session property for temporary,
@@ -342,21 +254,82 @@ Hive connector documentation.
   - `false`
 :::
 
-## Storage
+(hive-file-system-configuration)=
+### File system access configuration
 
-The Hive connector supports the following storage options:
+The connector supports native, high-performance file system access to object
+storage systems:
 
-- {doc}`Amazon S3 <hive-s3>`
-- {doc}`Azure Storage <hive-azure>`
-- {doc}`Google Cloud Storage <hive-gcs-tutorial>`
-- {doc}`IBM Cloud Object Storage <hive-cos>`
+* [](/object-storage)
+* [](/object-storage/file-system-azure)
+* [](/object-storage/file-system-gcs)
+* [](/object-storage/file-system-s3)
 
-The Hive connector also supports {doc}`storage caching <hive-caching>`.
+You must enable and configure the specific native file system access. If none is
+activated, the [legacy support](file-system-legacy) is used and must be
+configured.
 
+(hive-security)=
 ## Security
 
-Please see the {doc}`/connector/hive-security` section for information on the
-security options available for the Hive connector.
+The connector supports different means of authentication for the used [file
+system](hive-file-system-configuration) and [metastore](hive-configuration).
+
+In addition, the following security-related features are supported.
+
+(hive-authorization)=
+## Authorization
+
+You can enable authorization checks by setting the `hive.security` property in
+the catalog properties file. This property must be one of the following values:
+
+:::{list-table} `hive.security` property values
+:widths: 30, 60
+:header-rows: 1
+
+* - Property value
+  - Description
+* - `allow-all` (default value)
+  - No authorization checks are enforced.
+* - `read-only`
+  - Operations that read data or metadata, such as `SELECT`, are permitted, but
+    none of the operations that write data or metadata, such as `CREATE`,
+    `INSERT` or `DELETE`, are allowed.
+* - `file`
+  - Authorization checks are enforced using a catalog-level access control
+    configuration file whose path is specified in the `security.config-file`
+    catalog configuration property. See [](catalog-file-based-access-control)
+    for details.
+* - `sql-standard`
+  - Users are permitted to perform the operations as long as they have the
+    required privileges as per the SQL standard. In this mode, Trino enforces
+    the authorization checks for queries based on the privileges defined in Hive
+    metastore. To alter these privileges, use the [](/sql/grant) and
+    [](/sql/revoke) commands.
+
+    See the [](hive-sql-standard-based-authorization) section for details.
+:::
+
+(hive-sql-standard-based-authorization)=
+### SQL standard based authorization
+
+When `sql-standard` security is enabled, Trino enforces the same SQLuyrity
+standard-based authorization as Hive does.
+
+Since Trino's `ROLE` syntax support matches the SQL standard, and
+Hive does not exactly follow the SQL standard, there are the following
+limitations and differences:
+
+- `CREATE ROLE role WITH ADMIN` is not supported.
+- The `admin` role must be enabled to execute `CREATE ROLE`, `DROP ROLE` or `CREATE SCHEMA`.
+- `GRANT role TO user GRANTED BY someone` is not supported.
+- `REVOKE role FROM user GRANTED BY someone` is not supported.
+- By default, all a user's roles, except `admin`, are enabled in a new user session.
+- One particular role can be selected by executing `SET ROLE role`.
+- `SET ROLE ALL` enables all of a user's roles except `admin`.
+- The `admin` role must be enabled explicitly by executing `SET ROLE admin`.
+- `GRANT privilege ON SCHEMA schema` is not supported. Schema ownership can be
+  changed with `ALTER SCHEMA schema SET AUTHORIZATION user`
 
 (hive-sql-support)=
 
@@ -588,11 +561,6 @@ The following procedures are available:
 
 ### Data management
 
-Some {ref}`data management <sql-data-management>` statements may be affected by
-the Hive catalog's authorization check policy. In the default `legacy` policy,
-some statements are disabled by default. See {doc}`hive-security` for more
-information.
-
 The {ref}`sql-data-management` functionality includes support for `INSERT`,
 `UPDATE`, `DELETE`, and `MERGE` statements, with the exact support
 depending on the storage system, file format, and metastore.
@@ -639,7 +607,7 @@ type conversions.
 * - `BOOLEAN`
   - `VARCHAR`
 * - `VARCHAR`
-  - `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT`, `DOUBLE`, `TIMESTAMP`, `DATE`, as well as
+  - `BOOLEAN`, `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT`, `REAL`, `DOUBLE`, `TIMESTAMP`, `DATE`, `CHAR` as well as
     narrowing conversions for `VARCHAR`
 * - `CHAR`
   - narrowing conversions for `CHAR`
@@ -834,8 +802,8 @@ WITH (format='CSV',
   -
 * - `orc_bloom_filter_columns`
   - Comma separated list of columns to use for ORC bloom filter. It improves the
-    performance of queries using range predicates when reading ORC files.
-    Requires ORC format.
+    performance of queries using equality predicates, such as `=`, `IN` and
+    small range predicates, when reading ORC files. Requires ORC format.
   - `[]`
 * - `orc_bloom_filter_fpp`
   - The ORC bloom filters false positive probability. Requires ORC format.
@@ -843,6 +811,11 @@ WITH (format='CSV',
 * - `partitioned_by`
   - The partitioning column for the storage table. The columns listed in the
     `partitioned_by` clause must be the last columns as defined in the DDL.
+  - `[]`
+* - `parquet_bloom_filter_columns`
+  - Comma separated list of columns to use for Parquet bloom filter. It improves
+    the performance of queries using equality predicates, such as `=`, `IN` and
+    small range predicates, when reading Parquet files. Requires Parquet format.
   - `[]`
 * - `skip_footer_line_count`
   - The number of footer lines to ignore when parsing the file for data.
@@ -1282,6 +1255,11 @@ and Delta Lake tables with the following catalog configuration properties:
 
 - `hive.iceberg-catalog-name` for redirecting the query to {doc}`/connector/iceberg`
 - `hive.delta-lake-catalog-name` for redirecting the query to {doc}`/connector/delta-lake`
+
+### File system cache
+
+The connector supports configuring and using [file system
+caching](/object-storage/file-system-cache).
 
 (hive-performance-tuning-configuration)=
 

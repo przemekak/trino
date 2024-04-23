@@ -37,6 +37,7 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.util.SnapshotUtil;
 
 import java.util.List;
 import java.util.Map;
@@ -115,6 +116,9 @@ public class TableChangesFunction
 
         checkSnapshotExists(icebergTable, startSnapshotId);
         checkSnapshotExists(icebergTable, endSnapshotId);
+        if (!SnapshotUtil.isParentAncestorOf(icebergTable, endSnapshotId, startSnapshotId)) {
+            throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "Starting snapshot (exclusive) %s is not a parent ancestor of end snapshot %s".formatted(startSnapshotId, endSnapshotId));
+        }
 
         ImmutableList.Builder<Descriptor.Field> columns = ImmutableList.builder();
         Schema tableSchema = icebergTable.schemas().get(icebergTable.snapshot(endSnapshotId).schemaId());
@@ -134,24 +138,28 @@ public class TableChangesFunction
                 VarcharType.createUnboundedVarcharType(),
                 ImmutableList.of(),
                 VarcharType.createUnboundedVarcharType(),
+                false,
                 Optional.empty()));
         columnHandlesBuilder.add(new IcebergColumnHandle(
                 new ColumnIdentity(DATA_CHANGE_VERSION_ID, DATA_CHANGE_VERSION_NAME, PRIMITIVE, ImmutableList.of()),
                 BIGINT,
                 ImmutableList.of(),
                 BIGINT,
+                false,
                 Optional.empty()));
         columnHandlesBuilder.add(new IcebergColumnHandle(
                 new ColumnIdentity(DATA_CHANGE_TIMESTAMP_ID, DATA_CHANGE_TIMESTAMP_NAME, PRIMITIVE, ImmutableList.of()),
                 TIMESTAMP_TZ_MILLIS,
                 ImmutableList.of(),
                 TIMESTAMP_TZ_MILLIS,
+                false,
                 Optional.empty()));
         columnHandlesBuilder.add(new IcebergColumnHandle(
                 new ColumnIdentity(DATA_CHANGE_ORDINAL_ID, DATA_CHANGE_ORDINAL_NAME, PRIMITIVE, ImmutableList.of()),
                 INTEGER,
                 ImmutableList.of(),
                 INTEGER,
+                false,
                 Optional.empty()));
         List<IcebergColumnHandle> columnHandles = columnHandlesBuilder.build();
 

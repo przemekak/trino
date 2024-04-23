@@ -648,6 +648,14 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Drop a not null constraint on the specified column
+     */
+    default void dropNotNullConstraint(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping a not null constraint");
+    }
+
+    /**
      * Sets the user/role on the specified table.
      */
     default void setTableAuthorization(ConnectorSession session, SchemaTableName tableName, TrinoPrincipal principal)
@@ -782,8 +790,6 @@ public interface ConnectorMetadata
 
     /**
      * Begin the atomic creation of a table with data.
-     *
-     * <p/>
      * If connector does not support execution with retries, the method should throw:
      * <pre>
      *     new TrinoException(NOT_SUPPORTED, "This connector does not support query retries")
@@ -842,10 +848,27 @@ public interface ConnectorMetadata
 
     /**
      * Finish insert query
+     *
+     * @deprecated use {@link #finishInsert(ConnectorSession, ConnectorInsertTableHandle, List, Collection, Collection)}
      */
+    @Deprecated
     default Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         throw new TrinoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata beginInsert() is implemented without finishInsert()");
+    }
+
+    /**
+     * Finish insert query
+     */
+    default Optional<ConnectorOutputMetadata> finishInsert(
+            ConnectorSession session,
+            ConnectorInsertTableHandle insertHandle,
+            List<ConnectorTableHandle> sourceTableHandles,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics)
+    {
+        // Delegate to deprecated SPI to not break existing connectors
+        return finishInsert(session, insertHandle, fragments, computedStatistics);
     }
 
     /**
@@ -947,6 +970,22 @@ public interface ConnectorMetadata
      * Create the specified view. The view definition is intended to
      * be serialized by the connector for permanent storage.
      */
+    default void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
+    {
+        if (viewProperties.isEmpty()) {
+            createView(session, viewName, definition, replace);
+            return;
+        }
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating views");
+    }
+
+    /**
+     * Create the specified view. The view definition is intended to
+     * be serialized by the connector for permanent storage.
+     *
+     * @deprecated use {@link #createView(ConnectorSession, SchemaTableName, ConnectorViewDefinition, Map, boolean)}
+     */
+    @Deprecated
     default void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, boolean replace)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating views");
@@ -1011,6 +1050,15 @@ public interface ConnectorMetadata
     default Optional<ConnectorViewDefinition> getView(ConnectorSession session, SchemaTableName viewName)
     {
         return Optional.empty();
+    }
+
+    /**
+     * Gets the view properties for the specified view.
+     */
+    @Experimental(eta = "2024-06-01")
+    default Map<String, Object> getViewProperties(ConnectorSession session, SchemaTableName viewName)
+    {
+        return Map.of();
     }
 
     /**
@@ -1476,7 +1524,6 @@ public interface ConnectorMetadata
      *      groupingSets=[[{@link ColumnHandle} CH2]]
      *      assignments = {a = CH0, b = CH1, c = CH2}
      * </pre>
-     * </p>
      * <p>
      * Assuming the connector knows how to handle {@code agg_fn1(...)} and {@code agg_fn2(...)}, it would return:
      * <pre>
@@ -1510,7 +1557,6 @@ public interface ConnectorMetadata
      *      }
      * }
      * </pre>
-     * </p>
      */
     default Optional<AggregationApplicationResult<ConnectorTableHandle>> applyAggregation(
             ConnectorSession session,
@@ -1652,7 +1698,6 @@ public interface ConnectorMetadata
      * <p>
      * Connectors can choose to reject a query based on the table scan potentially being too expensive, for example
      * if no filtering is done on a partition column.
-     * <p>
      */
     default void validateScan(ConnectorSession session, ConnectorTableHandle handle) {}
 

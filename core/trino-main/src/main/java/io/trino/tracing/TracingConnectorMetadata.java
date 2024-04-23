@@ -513,6 +513,15 @@ public class TracingConnectorMetadata
     }
 
     @Override
+    public void dropNotNullConstraint(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column)
+    {
+        Span span = startSpan("dropNotNull", tableHandle);
+        try (var ignored = scopedSpan(span)) {
+            delegate.dropNotNullConstraint(session, tableHandle, column);
+        }
+    }
+
+    @Override
     public void setTableAuthorization(ConnectorSession session, SchemaTableName tableName, TrinoPrincipal principal)
     {
         Span span = startSpan("setTableAuthorization", tableName);
@@ -699,6 +708,18 @@ public class TracingConnectorMetadata
     }
 
     @Override
+    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, List<ConnectorTableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    {
+        Span span = startSpan("finishInsert");
+        if (span.isRecording()) {
+            span.setAttribute(TrinoAttributes.HANDLE, insertHandle.toString());
+        }
+        try (var ignored = scopedSpan(span)) {
+            return delegate.finishInsert(session, insertHandle, sourceTableHandles, fragments, computedStatistics);
+        }
+    }
+
+    @Override
     public boolean delegateMaterializedViewRefreshToConnector(ConnectorSession session, SchemaTableName viewName)
     {
         Span span = startSpan("delegateMaterializedViewRefreshToConnector", viewName);
@@ -787,6 +808,15 @@ public class TracingConnectorMetadata
     }
 
     @Override
+    public void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
+    {
+        Span span = startSpan("createView", viewName);
+        try (var ignored = scopedSpan(span)) {
+            delegate.createView(session, viewName, definition, viewProperties, replace);
+        }
+    }
+
+    @Override
     public void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, boolean replace)
     {
         Span span = startSpan("createView", viewName);
@@ -846,6 +876,15 @@ public class TracingConnectorMetadata
         Span span = startSpan("getView", viewName);
         try (var ignored = scopedSpan(span)) {
             return delegate.getView(session, viewName);
+        }
+    }
+
+    @Override
+    public Map<String, Object> getViewProperties(ConnectorSession session, SchemaTableName viewName)
+    {
+        Span span = startSpan("getViewProperties", viewName);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.getViewProperties(session, viewName);
         }
     }
 

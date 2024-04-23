@@ -15,7 +15,6 @@ package io.trino.execution;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Key;
-import com.google.inject.TypeLiteral;
 import io.trino.client.NodeVersion;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.plugin.tpch.TpchPlugin;
@@ -56,9 +55,9 @@ public class TestDropCatalogTask
     @BeforeEach
     public void setUp()
     {
-        StandaloneQueryRunner queryRunner = new StandaloneQueryRunner(TEST_SESSION);
+        QueryRunner queryRunner = new StandaloneQueryRunner(TEST_SESSION);
         queryRunner.installPlugin(new TpchPlugin());
-        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getServer().getInstance(Key.get(new TypeLiteral<Map<Class<? extends Statement>, DataDefinitionTask<?>>>() {}));
+        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getCoordinator().getInstance(new Key<>() {});
         task = (DropCatalogTask) tasks.get(DropCatalog.class);
         this.queryRunner = queryRunner;
     }
@@ -83,7 +82,7 @@ public class TestDropCatalogTask
         assertThat(queryRunner.getPlannerContext().getMetadata().catalogExists(createNewQuery().getSession(), TEST_CATALOG)).isFalse();
         assertThatExceptionOfType(TrinoException.class)
                 .isThrownBy(() -> getFutureValue(task.execute(statement, createNewQuery(), emptyList(), WarningCollector.NOOP)))
-                .withMessage("Catalog '%s' does not exist", TEST_CATALOG);
+                .withMessage("Catalog '%s' not found", TEST_CATALOG);
     }
 
     @Test

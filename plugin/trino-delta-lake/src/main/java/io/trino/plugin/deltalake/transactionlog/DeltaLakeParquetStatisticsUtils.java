@@ -267,7 +267,7 @@ public class DeltaLakeParquetStatisticsUtils
             int fieldBlockIndex = row.getRawIndex();
             String fieldName = field.getName().orElseThrow();
             if (field.getType() instanceof RowType fieldRowType) {
-                nullCounts.put(fieldName, toNullCount(fieldRowType, fieldBlock.getObject(fieldBlockIndex, SqlRow.class)));
+                nullCounts.put(fieldName, toNullCount(fieldRowType, fieldRowType.getObject(fieldBlock, fieldBlockIndex)));
             }
             else {
                 nullCounts.put(fieldName, BIGINT.getLong(fieldBlock, fieldBlockIndex));
@@ -349,7 +349,7 @@ public class DeltaLakeParquetStatisticsUtils
             return Optional.empty();
         }
 
-        LOG.warn("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
+        LOG.debug("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
         return Optional.empty();
     }
 
@@ -429,7 +429,7 @@ public class DeltaLakeParquetStatisticsUtils
             return Optional.empty();
         }
 
-        LOG.warn("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
+        LOG.debug("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
         return Optional.empty();
     }
 }

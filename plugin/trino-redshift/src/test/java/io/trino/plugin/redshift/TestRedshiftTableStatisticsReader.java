@@ -16,7 +16,6 @@ package io.trino.plugin.redshift;
 import com.amazon.redshift.Driver;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -38,7 +37,6 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Types;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 
@@ -46,7 +44,6 @@ import static io.trino.plugin.redshift.RedshiftQueryRunner.JDBC_PASSWORD;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.JDBC_URL;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.JDBC_USER;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.TEST_SCHEMA;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.createRedshiftQueryRunner;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.executeInRedshift;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -75,16 +72,17 @@ public class TestRedshiftTableStatisticsReader
             createVarcharJdbcColumnHandle("mktsegment", 10),
             createVarcharJdbcColumnHandle("comment", 117));
 
-    private final RedshiftTableStatisticsReader statsReader = new RedshiftTableStatisticsReader(new DriverConnectionFactory(
-            new Driver(),
-            new BaseJdbcConfig().setConnectionUrl(JDBC_URL),
-            new StaticCredentialProvider(Optional.of(JDBC_USER), Optional.of(JDBC_PASSWORD))));
+    private final RedshiftTableStatisticsReader statsReader = new RedshiftTableStatisticsReader(
+            DriverConnectionFactory.builder(new Driver(), JDBC_URL, new StaticCredentialProvider(Optional.of(JDBC_USER), Optional.of(JDBC_PASSWORD)))
+                    .build());
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createRedshiftQueryRunner(Map.of(), Map.of(), ImmutableList.of(CUSTOMER));
+        return RedshiftQueryRunner.builder()
+                .setInitialTables(List.of(CUSTOMER))
+                .build();
     }
 
     @Test

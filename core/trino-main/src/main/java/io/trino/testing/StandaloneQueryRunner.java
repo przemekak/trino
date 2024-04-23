@@ -16,6 +16,9 @@ package io.trino.testing;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Key;
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.trino.Session;
 import io.trino.cost.StatsCalculator;
 import io.trino.execution.FailureInjector.InjectedFailureType;
@@ -45,11 +48,13 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 
+import static com.google.common.base.Preconditions.checkState;
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
 import static java.util.Objects.requireNonNull;
 
@@ -59,8 +64,11 @@ public final class StandaloneQueryRunner
     private final Session defaultSession;
     private final TestingTrinoServer server;
     private final DirectTrinoClient trinoClient;
+    private final InMemorySpanExporter spanExporter = InMemorySpanExporter.create();
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    private final AtomicInteger concurrentQueries = new AtomicInteger();
+    private volatile boolean spansValid = true;
 
     public StandaloneQueryRunner(Session defaultSession)
     {
@@ -71,6 +79,7 @@ public final class StandaloneQueryRunner
     {
         this.defaultSession = requireNonNull(defaultSession, "defaultSession is null");
         TestingTrinoServer.Builder builder = TestingTrinoServer.builder()
+                .setSpanProcessor(SimpleSpanProcessor.create(spanExporter))
                 .setProperties(ImmutableMap.<String, String>builder()
                         .put("query.client.timeout", "10m")
                         .put("exchange.http-client.idle-timeout", "1h")
@@ -87,23 +96,37 @@ public final class StandaloneQueryRunner
     }
 
     @Override
-    public MaterializedResult execute(@Language("SQL") String sql)
+    public List<SpanData> getSpans()
     {
-        return execute(defaultSession, sql);
+        checkState(spansValid, "No valid spans, queries were executing concurrently");
+        return spanExporter.getFinishedSpanItems();
     }
 
     @Override
     public MaterializedResult execute(Session session, @Language("SQL") String sql)
     {
-        return executeWithQueryId(session, sql).getResult();
+        return executeInternal(session, sql).result();
     }
 
-    public MaterializedResultWithQueryId executeWithQueryId(Session session, @Language("SQL") String sql)
+    @Override
+    public MaterializedResultWithPlan executeWithPlan(Session session, String sql)
+    {
+        DirectTrinoClient.Result result = executeInternal(session, sql);
+        return new MaterializedResultWithPlan(result.queryId(), server.getQueryPlan(result.queryId()), result.result());
+    }
+
+    private DirectTrinoClient.Result executeInternal(Session session, @Language("SQL") String sql)
     {
         lock.readLock().lock();
         try {
-            DirectTrinoClient.MaterializedResultWithQueryId result = trinoClient.execute(session, sql);
-            return new MaterializedResultWithQueryId(result.queryId(), result.result());
+            spansValid = concurrentQueries.incrementAndGet() == 1;
+            try {
+                spanExporter.reset();
+                return trinoClient.execute(session, sql);
+            }
+            finally {
+                concurrentQueries.decrementAndGet();
+            }
         }
         catch (Throwable e) {
             e.addSuppressed(new Exception("SQL: " + sql));
@@ -115,20 +138,20 @@ public final class StandaloneQueryRunner
     }
 
     @Override
-    public MaterializedResultWithPlan executeWithPlan(Session session, String sql, WarningCollector warningCollector)
-    {
-        MaterializedResultWithQueryId resultWithQueryId = executeWithQueryId(session, sql);
-        return new MaterializedResultWithPlan(resultWithQueryId.getResult().toTestTypes(), server.getQueryPlan(resultWithQueryId.getQueryId()));
-    }
-
-    @Override
     public Plan createPlan(Session session, String sql)
     {
         // session must be in a transaction registered with the transaction manager in this query runner
         getTransactionManager().getTransactionInfo(session.getRequiredTransactionId());
 
-        Statement statement = server.getInstance(Key.get(SqlParser.class)).createStatement(sql);
-        return server.getQueryExplainer().getLogicalPlan(session, statement, ImmutableList.of(), WarningCollector.NOOP, createPlanOptimizersStatsCollector());
+        spansValid = concurrentQueries.incrementAndGet() == 1;
+        try {
+            spanExporter.reset();
+            Statement statement = server.getInstance(Key.get(SqlParser.class)).createStatement(sql);
+            return server.getQueryExplainer().getLogicalPlan(session, statement, ImmutableList.of(), WarningCollector.NOOP, createPlanOptimizersStatsCollector());
+        }
+        finally {
+            concurrentQueries.decrementAndGet();
+        }
     }
 
     @Override
@@ -214,7 +237,8 @@ public final class StandaloneQueryRunner
         return server.getAccessControl();
     }
 
-    public TestingTrinoServer getServer()
+    @Override
+    public TestingTrinoServer getCoordinator()
     {
         return server;
     }
@@ -229,11 +253,6 @@ public final class StandaloneQueryRunner
     public void addFunctions(FunctionBundle functionBundle)
     {
         server.addFunctions(functionBundle);
-    }
-
-    public void createCatalog(String catalogName, String connectorName)
-    {
-        createCatalog(catalogName, connectorName, ImmutableMap.of());
     }
 
     @Override

@@ -20,6 +20,7 @@ import org.junit.platform.launcher.TestExecutionListener;
 import org.junit.platform.launcher.TestPlan;
 import org.testcontainers.DockerClientFactory;
 
+import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.testing.services.junit.Listeners.reportListenerFailure;
 import static java.lang.Boolean.getBoolean;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
@@ -57,6 +59,21 @@ public final class ReportLeakedContainers
                 log.info("ReportLeakedContainers disabled");
                 return;
             }
+
+            try {
+                if (ignoredIds.isEmpty()) {
+                    Field instanceField = DockerClientFactory.class.getDeclaredField("instance");
+                    instanceField.setAccessible(true);
+                    if (instanceField.get(null) == null) {
+                        log.info("DockerClientFactory not initialized, so there should be no leaked containers, skipping the check");
+                        return;
+                    }
+                }
+            }
+            catch (ReflectiveOperationException e) {
+                throw new RuntimeException(e);
+            }
+
             log.info("Checking for leaked containers");
 
             @SuppressWarnings("resource") // Throws when close is attempted, as this is a global instance.
@@ -64,23 +81,21 @@ public final class ReportLeakedContainers
 
             List<Container> containers = dockerClient.listContainersCmd()
                     .withLabelFilter(Map.of(DockerClientFactory.TESTCONTAINERS_SESSION_ID_LABEL, DockerClientFactory.SESSION_ID))
+                    // ignore status "exited" - for example, failed containers after using `withStartupAttempts()`
+                    .withStatusFilter(List.of("created", "restarting", "running", "paused"))
                     .exec()
                     .stream()
                     .filter(container -> !ignoredIds.contains(container.getId()))
                     .collect(toImmutableList());
 
             if (!containers.isEmpty()) {
-                log.error("Leaked containers: %s", containers.stream()
+                reportListenerFailure(getClass(), "Leaked containers: %s", containers.stream()
                         .map(container -> toStringHelper("container")
                                 .add("id", container.getId())
                                 .add("image", container.getImage())
                                 .add("imageId", container.getImageId())
                                 .toString())
                         .collect(joining(", ", "[", "]")));
-
-                // JUnit does not fail on a listener exception.
-                System.err.println("JVM will be terminated");
-                System.exit(1);
             }
         }
     }

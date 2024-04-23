@@ -30,6 +30,8 @@ import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.JoinApplicationResult;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -72,7 +74,6 @@ import io.trino.spi.statistics.TableStatisticsMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.planner.PartitioningHandle;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.Collection;
 import java.util.List;
@@ -287,6 +288,11 @@ public interface Metadata
     void setFieldType(Session session, TableHandle tableHandle, List<String> fieldPath, Type type);
 
     /**
+     * Drop a not null constraint on the specified column.
+     */
+    void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle column);
+
+    /**
      * Set the authorization (owner) of specified table's user/role
      */
     void setTableAuthorization(Session session, CatalogSchemaTableName table, TrinoPrincipal principal);
@@ -376,7 +382,7 @@ public interface Metadata
     /**
      * Finish insert query
      */
-    Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
+    Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
 
     /**
      * Returns true if materialized view refresh should be delegated to connector
@@ -487,6 +493,11 @@ public interface Metadata
     Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName);
 
     /**
+     * Returns the view definition for the specified view name.
+     */
+    Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName);
+
+    /**
      * Gets the schema properties for the specified schema.
      */
     Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName);
@@ -499,7 +510,7 @@ public interface Metadata
     /**
      * Creates the specified view with the specified view definition.
      */
-    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace);
+    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> properties, boolean replace);
 
     /**
      * Rename the specified view.
@@ -663,7 +674,7 @@ public interface Metadata
     void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee);
 
     /**
-     * Revokes the specified privilege on the specified table from the specified user
+     * Revokes the specified privilege on the specified table from the specified user.
      */
     void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption);
 
@@ -672,6 +683,42 @@ public interface Metadata
      */
     List<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix);
 
+    /**
+     * Gets all the EntityPrivileges associated with an entityKind.  Defines ALL PRIVILEGES
+     * for the entityKind
+     */
+    default Set<EntityPrivilege> getAllEntityKindPrivileges(String entityKind)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Grants the specified privileges to the specified user on the specified grantee.
+     * If the set of privileges is empty, it is interpreted as all privileges for the entityKind.
+     */
+    default void grantEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Deny the specified privileges to the specified principal on the specified entity.
+     * If the set of privileges is empty, it is interpreted as all privileges for the entityKind.
+     */
+    default void denyEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Revokes the specified privilege on the specified entity from the specified grantee.
+     * If the set of privileges is empty, it is interpreted as all privileges for the entityKind.
+     */
+    default void revokeEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
     //
     // Functions
     //
@@ -679,8 +726,6 @@ public interface Metadata
     Collection<FunctionMetadata> listGlobalFunctions(Session session);
 
     Collection<FunctionMetadata> listFunctions(Session session, CatalogSchemaName schema);
-
-    ResolvedFunction decodeFunction(QualifiedName name);
 
     Collection<CatalogFunctionMetadata> getFunctions(Session session, CatalogSchemaFunctionName catalogSchemaFunctionName);
 

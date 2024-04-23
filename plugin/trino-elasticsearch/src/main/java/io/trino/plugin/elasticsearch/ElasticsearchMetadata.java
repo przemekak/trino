@@ -68,6 +68,7 @@ import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
+import org.elasticsearch.client.ResponseException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -79,6 +80,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verifyNotNull;
@@ -176,10 +178,10 @@ public class ElasticsearchMetadata
 
         if (isPassthroughQuery(handle)) {
             return new ConnectorTableMetadata(
-                    new SchemaTableName(handle.getSchema(), handle.getIndex()),
+                    new SchemaTableName(handle.schema(), handle.index()),
                     ImmutableList.of(PASSTHROUGH_QUERY_RESULT_COLUMN_METADATA));
         }
-        return getTableMetadata(handle.getSchema(), handle.getIndex());
+        return getTableMetadata(handle.schema(), handle.index());
     }
 
     private ConnectorTableMetadata getTableMetadata(String schemaName, String tableName)
@@ -191,7 +193,7 @@ public class ElasticsearchMetadata
     private InternalTableMetadata makeInternalTableMetadata(ConnectorTableHandle table)
     {
         ElasticsearchTableHandle handle = (ElasticsearchTableHandle) table;
-        return makeInternalTableMetadata(handle.getSchema(), handle.getIndex());
+        return makeInternalTableMetadata(handle.schema(), handle.index());
     }
 
     private InternalTableMetadata makeInternalTableMetadata(String schema, String tableName)
@@ -410,18 +412,18 @@ public class ElasticsearchMetadata
         ElasticsearchColumnHandle column = (ElasticsearchColumnHandle) columnHandle;
 
         if (isPassthroughQuery(table)) {
-            if (column.getName().equals(PASSTHROUGH_QUERY_RESULT_COLUMN_METADATA.getName())) {
+            if (column.name().equals(PASSTHROUGH_QUERY_RESULT_COLUMN_METADATA.getName())) {
                 return PASSTHROUGH_QUERY_RESULT_COLUMN_METADATA;
             }
 
-            throw new IllegalArgumentException(format("Unexpected column for table '%s$query': %s", table.getIndex(), column.getName()));
+            throw new IllegalArgumentException(format("Unexpected column for table '%s$query': %s", table.index(), column.name()));
         }
 
-        return BuiltinColumns.of(column.getName())
+        return BuiltinColumns.of(column.name())
                 .map(BuiltinColumns::getMetadata)
                 .orElse(ColumnMetadata.builder()
-                        .setName(column.getName())
-                        .setType(column.getType())
+                        .setName(column.name())
+                        .setType(column.type())
                         .build());
     }
 
@@ -444,8 +446,19 @@ public class ElasticsearchMetadata
         }
 
         return listTables(session, prefix.getSchema()).stream()
-                .map(name -> getTableMetadata(name.getSchemaName(), name.getTableName()))
-                .map(tableMetadata -> TableColumnsMetadata.forTable(tableMetadata.getTable(), tableMetadata.getColumns()))
+                .flatMap(name -> {
+                    try {
+                        ConnectorTableMetadata tableMetadata = getTableMetadata(name.getSchemaName(), name.getTableName());
+                        return Stream.of(TableColumnsMetadata.forTable(tableMetadata.getTable(), tableMetadata.getColumns()));
+                    }
+                    catch (TrinoException e) {
+                        // this may happen when table is being deleted concurrently
+                        if (e.getCause() instanceof ResponseException cause && cause.getResponse().getStatusLine().getStatusCode() == 404) {
+                            return Stream.empty();
+                        }
+                        throw e;
+                    }
+                })
                 .iterator();
     }
 
@@ -455,7 +468,7 @@ public class ElasticsearchMetadata
         ElasticsearchTableHandle handle = (ElasticsearchTableHandle) table;
 
         return new ConnectorTableProperties(
-                handle.getConstraint(),
+                handle.constraint(),
                 Optional.empty(),
                 Optional.empty(),
                 ImmutableList.of());
@@ -471,17 +484,17 @@ public class ElasticsearchMetadata
             return Optional.empty();
         }
 
-        if (handle.getLimit().isPresent() && handle.getLimit().getAsLong() <= limit) {
+        if (handle.limit().isPresent() && handle.limit().getAsLong() <= limit) {
             return Optional.empty();
         }
 
         handle = new ElasticsearchTableHandle(
-                handle.getType(),
-                handle.getSchema(),
-                handle.getIndex(),
-                handle.getConstraint(),
-                handle.getRegexes(),
-                handle.getQuery(),
+                handle.type(),
+                handle.schema(),
+                handle.index(),
+                handle.constraint(),
+                handle.regexes(),
+                handle.query(),
                 OptionalLong.of(limit));
 
         return Optional.of(new LimitApplicationResult<>(handle, false, false));
@@ -503,7 +516,7 @@ public class ElasticsearchMetadata
         for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
             ElasticsearchColumnHandle column = (ElasticsearchColumnHandle) entry.getKey();
 
-            if (column.isSupportsPredicates()) {
+            if (column.supportsPredicates()) {
                 supported.put(column, entry.getValue());
             }
             else {
@@ -511,11 +524,11 @@ public class ElasticsearchMetadata
             }
         }
 
-        TupleDomain<ColumnHandle> oldDomain = handle.getConstraint();
+        TupleDomain<ColumnHandle> oldDomain = handle.constraint();
         TupleDomain<ColumnHandle> newDomain = oldDomain.intersect(TupleDomain.withColumnDomains(supported));
 
         ConnectorExpression oldExpression = constraint.getExpression();
-        Map<String, String> newRegexes = new HashMap<>(handle.getRegexes());
+        Map<String, String> newRegexes = new HashMap<>(handle.regexes());
         List<ConnectorExpression> expressions = ConnectorExpressions.extractConjuncts(constraint.getExpression());
         List<ConnectorExpression> notHandledExpressions = new ArrayList<>();
         for (ConnectorExpression expression : expressions) {
@@ -525,7 +538,7 @@ public class ElasticsearchMetadata
                     String variableName = ((Variable) arguments.get(0)).getName();
                     ElasticsearchColumnHandle column = (ElasticsearchColumnHandle) constraint.getAssignments().get(variableName);
                     verifyNotNull(column, "No assignment for %s", variableName);
-                    String columnName = column.getName();
+                    String columnName = column.name();
                     Object pattern = ((Constant) arguments.get(1)).getValue();
                     Optional<Slice> escape = Optional.empty();
                     if (arguments.size() == 3) {
@@ -533,7 +546,7 @@ public class ElasticsearchMetadata
                     }
 
                     if (!newRegexes.containsKey(columnName) && pattern instanceof Slice) {
-                        IndexMetadata metadata = client.getIndexMetadata(handle.getIndex());
+                        IndexMetadata metadata = client.getIndexMetadata(handle.index());
                         if (metadata.getSchema()
                                     .getFields().stream()
                                     .anyMatch(field -> columnName.equals(field.getName()) && field.getType() instanceof PrimitiveType && "keyword".equals(((PrimitiveType) field.getType()).getName()))) {
@@ -552,13 +565,13 @@ public class ElasticsearchMetadata
         }
 
         handle = new ElasticsearchTableHandle(
-                handle.getType(),
-                handle.getSchema(),
-                handle.getIndex(),
+                handle.type(),
+                handle.schema(),
+                handle.index(),
                 newDomain,
                 newRegexes,
-                handle.getQuery(),
-                handle.getLimit());
+                handle.query(),
+                handle.limit());
 
         return Optional.of(new ConstraintApplicationResult<>(handle, TupleDomain.withColumnDomains(unsupported), newExpression, false));
     }
@@ -645,7 +658,7 @@ public class ElasticsearchMetadata
 
     private static boolean isPassthroughQuery(ElasticsearchTableHandle table)
     {
-        return table.getType().equals(QUERY);
+        return table.type().equals(QUERY);
     }
 
     @Override

@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.mysql;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.spi.type.TimeZoneKey;
@@ -36,7 +35,6 @@ import java.sql.Statement;
 import java.time.ZoneId;
 import java.util.Map;
 
-import static io.trino.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.TimeType.createTimeType;
 import static io.trino.spi.type.TimestampType.createTimestampType;
@@ -58,7 +56,8 @@ public class TestMySqlTimeMappingsWithServerTimeZone
             throws Exception
     {
         mySqlServer = closeAfterClass(new TestingMySqlServer(ZoneId.of("Pacific/Apia")));
-        return createMySqlQueryRunner(mySqlServer, ImmutableMap.of(), ImmutableMap.of(), ImmutableList.of());
+        return MySqlQueryRunner.builder(mySqlServer)
+                .build();
     }
 
     @Test
@@ -683,7 +682,7 @@ public class TestMySqlTimeMappingsWithServerTimeZone
     {
         String connectionUrl = mySqlServer.getJdbcUrl() + "&zeroDateTimeBehavior=convertToNull";
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(getSession()).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(getSession()).build();
         queryRunner.installPlugin(new MySqlPlugin());
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("connection-url", connectionUrl)

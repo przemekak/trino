@@ -54,7 +54,7 @@ public final class TestGroups
     public static final String HIVE_COMPRESSION = "hive_compression";
     public static final String HIVE_TRANSACTIONAL = "hive_transactional";
     public static final String HIVE_VIEW_COMPATIBILITY = "hive_view_compatibility";
-    public static final String HIVE_CACHING = "hive_caching";
+    public static final String HIVE_ALLUXIO_CACHING = "hive_alluxio_caching";
     public static final String HIVE_ICEBERG_REDIRECTIONS = "hive_iceberg_redirections";
     public static final String HIVE_HUDI_REDIRECTIONS = "hive_hudi_redirections";
     public static final String HIVE_KERBEROS = "hive_kerberos";
@@ -75,6 +75,7 @@ public final class TestGroups
     public static final String KAFKA_CONFLUENT_LICENSE = "kafka_confluent_license";
     public static final String TWO_HIVES = "two_hives";
     public static final String ICEBERG = "iceberg";
+    public static final String ICEBERG_ALLUXIO_CACHING = "iceberg_alluxio_caching";
     public static final String ICEBERG_FORMAT_VERSION_COMPATIBILITY = "iceberg_format_version_compatibility";
     public static final String ICEBERG_REST = "iceberg_rest";
     public static final String ICEBERG_JDBC = "iceberg_jdbc";
@@ -83,6 +84,7 @@ public final class TestGroups
     public static final String CLICKHOUSE = "clickhouse";
     public static final String KUDU = "kudu";
     public static final String MARIADB = "mariadb";
+    public static final String SNOWFLAKE = "snowflake";
     public static final String DELTA_LAKE_OSS = "delta-lake-oss";
     public static final String DELTA_LAKE_HDFS = "delta-lake-hdfs";
     public static final String DELTA_LAKE_MINIO = "delta-lake-minio";
@@ -91,7 +93,9 @@ public final class TestGroups
     public static final String DELTA_LAKE_DATABRICKS_104 = "delta-lake-databricks-104";
     public static final String DELTA_LAKE_DATABRICKS_113 = "delta-lake-databricks-113";
     public static final String DELTA_LAKE_DATABRICKS_122 = "delta-lake-databricks-122";
+    public static final String DATABRICKS_UNITY_HTTP_HMS = "databricks-unity-http-hms";
     public static final String DELTA_LAKE_EXCLUDE_91 = "delta-lake-exclude-91";
+    public static final String DELTA_LAKE_ALLUXIO_CACHING = "delta-lake-alluxio-caching";
     public static final String HUDI = "hudi";
     public static final String PARQUET = "parquet";
     public static final String IGNITE = "ignite";

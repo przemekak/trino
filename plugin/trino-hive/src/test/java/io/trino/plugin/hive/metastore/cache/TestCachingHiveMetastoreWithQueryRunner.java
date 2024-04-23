@@ -25,7 +25,6 @@ import io.trino.plugin.hive.metastore.RawHiveMetastoreFactory;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.SelectedRole;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -62,8 +61,7 @@ public class TestCachingHiveMetastoreWithQueryRunner
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        DistributedQueryRunner queryRunner = HiveQueryRunner.builder(ADMIN)
-                .setNodeCount(3)
+        QueryRunner queryRunner = HiveQueryRunner.builder(ADMIN)
                 // Required by testPartitionAppend test.
                 // Coordinator needs to be excluded from workers to deterministically reproduce the original problem
                 // https://github.com/trinodb/trino/pull/6853
@@ -174,19 +172,8 @@ public class TestCachingHiveMetastoreWithQueryRunner
         assertThatThrownBy(() -> getQueryRunner().execute("CALL system.flush_metadata_cache(schema_name => 'dummy_schema')"))
                 .hasMessage(illegalParameterMessage);
 
-        assertThatThrownBy(() -> getQueryRunner().execute("CALL system.flush_metadata_cache(schema_name => 'dummy_schema', table_name => 'dummy_table', partition_column => ARRAY['dummy_partition'])"))
+        assertThatThrownBy(() -> getQueryRunner().execute("CALL system.flush_metadata_cache(schema_name => 'dummy_schema', table_name => 'dummy_table', partition_columns => ARRAY['dummy_partition'])"))
                 .hasMessage("Parameters partition_column and partition_value should have same length");
-
-        assertThatThrownBy(
-                () -> getQueryRunner().execute("CALL system.flush_metadata_cache(" +
-                        "partition_columns => ARRAY['example'], " +
-                        "partition_values => ARRAY['0'], " +
-                        "partition_column => ARRAY['example'], " +
-                        "partition_value => ARRAY['0']" +
-                        ")"))
-                .hasMessage(
-                        "Procedure should only be invoked with single pair of partition definition named params: " +
-                                "partition_columns and partition_values or partition_column and partition_value");
     }
 
     @Test

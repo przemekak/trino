@@ -18,6 +18,7 @@ import com.google.common.io.Resources;
 import io.airlift.json.JsonCodecFactory;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeConfig;
+import io.trino.plugin.deltalake.DeltaLakeSessionProperties;
 import io.trino.plugin.deltalake.DeltaLakeTableHandle;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
@@ -26,6 +27,7 @@ import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointSchemaManager;
 import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
+import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.SchemaTableName;
@@ -38,6 +40,7 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.TypeManager;
 import io.trino.testing.TestingConnectorContext;
+import io.trino.testing.TestingConnectorSession;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -103,12 +106,12 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
         SchemaTableName schemaTableName = new SchemaTableName("db_name", tableName);
         TableSnapshot tableSnapshot;
         try {
-            tableSnapshot = transactionLogAccess.loadSnapshot(SESSION, schemaTableName, tableLocation);
+            tableSnapshot = transactionLogAccess.loadSnapshot(SESSION, schemaTableName, tableLocation, Optional.empty());
         }
         catch (IOException e) {
             throw new RuntimeException(e);
         }
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(tableSnapshot, SESSION);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
         return new DeltaLakeTableHandle(
                 schemaTableName.getSchemaName(),
                 schemaTableName.getTableName(),
@@ -123,7 +126,8 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                0);
+                0,
+                false);
     }
 
     @Test
@@ -254,7 +258,8 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
                 tableHandle.getUpdatedColumns(),
                 tableHandle.getUpdateRowIdColumns(),
                 tableHandle.getAnalyzeHandle(),
-                0);
+                0,
+                tableHandle.isTimeTravel());
         stats = getTableStatistics(SESSION, tableHandleWithUnenforcedConstraint);
         columnStatistics = stats.getColumnStatistics().get(COLUMN_HANDLE);
         assertThat(columnStatistics.getRange().get().getMin()).isEqualTo(0.0);
@@ -279,7 +284,8 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
                 tableHandle.getUpdatedColumns(),
                 tableHandle.getUpdateRowIdColumns(),
                 tableHandle.getAnalyzeHandle(),
-                0);
+                0,
+                tableHandle.isTimeTravel());
         DeltaLakeTableHandle tableHandleWithNoneUnenforcedConstraint = new DeltaLakeTableHandle(
                 tableHandle.getSchemaName(),
                 tableHandle.getTableName(),
@@ -294,7 +300,8 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
                 tableHandle.getUpdatedColumns(),
                 tableHandle.getUpdateRowIdColumns(),
                 tableHandle.getAnalyzeHandle(),
-                0);
+                0,
+                tableHandle.isTimeTravel());
         // If either the table handle's constraint or the provided Constraint are none, it will cause a 0 record count to be reported
         assertEmptyStats(getTableStatistics(SESSION, tableHandleWithNoneEnforcedConstraint));
         assertEmptyStats(getTableStatistics(SESSION, tableHandleWithNoneUnenforcedConstraint));
@@ -313,7 +320,14 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
     {
         // The transaction log for this table was created so that the checkpoints only write struct statistics, not json statistics
         DeltaLakeTableHandle tableHandle = registerTable("parquet_struct_statistics");
-        TableStatistics stats = getTableStatistics(SESSION, tableHandle);
+        ConnectorSession activeDataFileCacheSession = TestingConnectorSession.builder()
+                .setPropertyMetadata(new DeltaLakeSessionProperties(
+                        new DeltaLakeConfig().setCheckpointFilteringEnabled(false),
+                        new ParquetReaderConfig(),
+                        new ParquetWriterConfig())
+                        .getSessionProperties())
+                .build();
+        TableStatistics stats = getTableStatistics(activeDataFileCacheSession, tableHandle);
         assertThat(stats.getRowCount()).isEqualTo(Estimate.of(9));
 
         Map<ColumnHandle, ColumnStatistics> statisticsMap = stats.getColumnStatistics();
@@ -448,7 +462,7 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
     {
         TableSnapshot tableSnapshot;
         try {
-            tableSnapshot = transactionLogAccess.loadSnapshot(SESSION, tableHandle.getSchemaTableName(), tableHandle.getLocation());
+            tableSnapshot = transactionLogAccess.loadSnapshot(session, tableHandle.getSchemaTableName(), tableHandle.getLocation(), Optional.empty());
         }
         catch (IOException e) {
             throw new RuntimeException(e);

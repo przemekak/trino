@@ -30,7 +30,7 @@ import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hudi.HudiConnector;
 import io.trino.spi.security.ConnectorIdentity;
-import io.trino.testing.DistributedQueryRunner;
+import io.trino.testing.QueryRunner;
 
 import java.io.File;
 import java.io.IOException;
@@ -48,21 +48,21 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.google.common.io.Resources.getResource;
+import static io.trino.hive.formats.HiveClassNames.HUDI_PARQUET_INPUT_FORMAT;
+import static io.trino.hive.formats.HiveClassNames.MAPRED_PARQUET_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
 import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.trino.plugin.hive.HiveType.HIVE_DOUBLE;
 import static io.trino.plugin.hive.HiveType.HIVE_INT;
 import static io.trino.plugin.hive.HiveType.HIVE_LONG;
 import static io.trino.plugin.hive.HiveType.HIVE_STRING;
 import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
-import static io.trino.plugin.hive.util.HiveClassNames.HUDI_PARQUET_INPUT_FORMAT;
-import static io.trino.plugin.hive.util.HiveClassNames.MAPRED_PARQUET_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
 
 public class ResourceHudiTablesInitializer
         implements HudiTablesInitializer
 {
     @Override
-    public void initializeTables(DistributedQueryRunner queryRunner, Location externalLocation, String schemaName)
+    public void initializeTables(QueryRunner queryRunner, Location externalLocation, String schemaName)
             throws Exception
     {
         TrinoFileSystem fileSystem = ((HudiConnector) queryRunner.getCoordinator().getConnector("hudi")).getInjector()
@@ -86,7 +86,7 @@ public class ResourceHudiTablesInitializer
     }
 
     private void createTable(
-            DistributedQueryRunner queryRunner,
+            QueryRunner queryRunner,
             String schemaName,
             Location tablePath,
             String tableName,

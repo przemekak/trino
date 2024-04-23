@@ -52,7 +52,6 @@ import java.util.Set;
 import static com.mongodb.client.model.CollationCaseFirst.LOWER;
 import static com.mongodb.client.model.CollationStrength.PRIMARY;
 import static io.trino.plugin.mongodb.MongoQueryRunner.createMongoClient;
-import static io.trino.plugin.mongodb.MongoQueryRunner.createMongoQueryRunner;
 import static io.trino.plugin.mongodb.TypeUtils.isPushdownSupportedType;
 import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -76,7 +75,9 @@ public class TestMongoConnectorTest
     {
         server = new MongoServer();
         client = createMongoClient(server);
-        return createMongoQueryRunner(server, ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return MongoQueryRunner.builder(server)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @BeforeAll
@@ -692,8 +693,8 @@ public class TestMongoConnectorTest
         client.getDatabase("test").getCollection(tableName).insertOne(document);
 
         // TODO Fix MongoPageSource to throw TrinoException
-        assertThatThrownBy(() -> query("SELECT * FROM test." + tableName))
-                .hasMessageContaining("DBRef should have 3 fields : row(databaseName varchar, collectionName varchar)");
+        assertThat(query("SELECT * FROM test." + tableName))
+                .nonTrinoExceptionFailure().hasMessageContaining("DBRef should have 3 fields : row(databaseName varchar, collectionName varchar)");
 
         assertUpdate("DROP TABLE test." + tableName);
     }

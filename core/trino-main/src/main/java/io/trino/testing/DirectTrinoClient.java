@@ -29,6 +29,7 @@ import io.trino.execution.buffer.PagesSerdeFactory;
 import io.trino.memory.context.SimpleLocalMemoryContext;
 import io.trino.operator.DirectExchangeClient;
 import io.trino.operator.DirectExchangeClientSupplier;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.SessionContext;
 import io.trino.server.protocol.ProtocolUtil;
 import io.trino.server.protocol.Slug;
@@ -79,12 +80,12 @@ class DirectTrinoClient
         this.blockEncodingSerde = requireNonNull(blockEncodingSerde, "blockEncodingSerde is null");
     }
 
-    public MaterializedResultWithQueryId execute(Session session, @Language("SQL") String sql)
+    public Result execute(Session session, @Language("SQL") String sql)
     {
         return execute(SessionContext.fromSession(session), sql);
     }
 
-    public MaterializedResultWithQueryId execute(SessionContext sessionContext, @Language("SQL") String sql)
+    public Result execute(SessionContext sessionContext, @Language("SQL") String sql)
     {
         // create the query and wait for it to be dispatched
         QueryId queryId = dispatchManager.createQueryId();
@@ -92,7 +93,7 @@ class DirectTrinoClient
         getQueryFuture(dispatchManager.waitForDispatched(queryId));
         DispatchQuery dispatchQuery = dispatchManager.getQuery(queryId);
         if (dispatchQuery.getState().isDone()) {
-            return new MaterializedResultWithQueryId(queryId, toMaterializedRows(dispatchQuery, ImmutableList.of(), ImmutableList.of(), ImmutableList.of()));
+            return new Result(queryId, toMaterializedRows(dispatchQuery, ImmutableList.of(), ImmutableList.of(), ImmutableList.of()));
         }
 
         // read all output data
@@ -132,7 +133,7 @@ class DirectTrinoClient
             getQueryFuture(queryManager.getStateChange(queryId, queryState));
         }
 
-        return new MaterializedResultWithQueryId(queryId, toMaterializedRows(dispatchQuery, columnTypes.get(), columnNames.get(), pages));
+        return new Result(queryId, toMaterializedRows(dispatchQuery, columnTypes.get(), columnNames.get(), pages));
     }
 
     private DirectExchangeClient createExchangeClient(DispatchQuery dispatchQuery)
@@ -153,7 +154,7 @@ class DirectTrinoClient
 
         if (queryInfo.getState() != FINISHED) {
             if (queryInfo.getFailureInfo() == null) {
-                throw new QueryFailedException(queryInfo.getQueryId(), "Query failed with failure info");
+                throw new QueryFailedException(queryInfo.getQueryId(), "Query failed without failure info");
             }
             RuntimeException remoteException = queryInfo.getFailureInfo().toException();
             throw new QueryFailedException(queryInfo.getQueryId(), Optional.ofNullable(remoteException.getMessage()).orElseGet(remoteException::toString), remoteException);
@@ -178,7 +179,7 @@ class DirectTrinoClient
                 Optional.ofNullable(queryInfo.getUpdateType()),
                 updateCount,
                 mappedCopy(queryInfo.getWarnings(), ProtocolUtil::toClientWarning),
-                Optional.of(ProtocolUtil.toStatementStats(queryInfo)));
+                Optional.of(ProtocolUtil.toStatementStats(new ResultQueryInfo(queryInfo))));
     }
 
     private static List<MaterializedRow> toMaterializedRows(ConnectorSession session, List<Type> types, List<Page> pages)
@@ -215,9 +216,9 @@ class DirectTrinoClient
         }
     }
 
-    record MaterializedResultWithQueryId(QueryId queryId, MaterializedResult result)
+    record Result(QueryId queryId, MaterializedResult result)
     {
-        MaterializedResultWithQueryId
+        Result
         {
             requireNonNull(queryId, "queryId is null");
             requireNonNull(result, "result is null");

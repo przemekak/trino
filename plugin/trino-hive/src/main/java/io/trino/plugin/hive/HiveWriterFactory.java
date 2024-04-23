@@ -68,6 +68,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Maps.immutableEntry;
 import static com.google.common.collect.MoreCollectors.onlyElement;
+import static io.trino.hive.formats.HiveClassNames.HIVE_IGNORE_KEY_OUTPUT_FORMAT_CLASS;
 import static io.trino.plugin.hive.HiveCompressionCodecs.selectCompressionCodec;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
@@ -86,7 +87,6 @@ import static io.trino.plugin.hive.metastore.StorageFormat.fromHiveStorageFormat
 import static io.trino.plugin.hive.util.AcidTables.deltaSubdir;
 import static io.trino.plugin.hive.util.AcidTables.isFullAcidTable;
 import static io.trino.plugin.hive.util.AcidTables.isInsertOnlyTable;
-import static io.trino.plugin.hive.util.HiveClassNames.HIVE_IGNORE_KEY_OUTPUT_FORMAT_CLASS;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
 import static io.trino.plugin.hive.util.HiveUtil.makePartName;
@@ -353,20 +353,18 @@ public class HiveWriterFactory
                     writeInfo = locationService.getPartitionWriteInfo(locationHandle, partition, partitionName.get());
                 }
                 else {
-                    switch (insertExistingPartitionsBehavior) {
-                        case APPEND:
+                    writeInfo = switch (insertExistingPartitionsBehavior) {
+                        case APPEND -> {
                             updateMode = UpdateMode.APPEND;
-                            writeInfo = locationService.getTableWriteInfo(locationHandle, false);
-                            break;
-                        case OVERWRITE:
+                            yield locationService.getTableWriteInfo(locationHandle, false);
+                        }
+                        case OVERWRITE -> {
                             updateMode = UpdateMode.OVERWRITE;
-                            writeInfo = locationService.getTableWriteInfo(locationHandle, true);
-                            break;
-                        case ERROR:
-                            throw new TrinoException(HIVE_TABLE_READ_ONLY, "Unpartitioned Hive tables are immutable");
-                        default:
-                            throw new IllegalArgumentException("Unsupported insert existing table behavior: " + insertExistingPartitionsBehavior);
-                    }
+                            yield locationService.getTableWriteInfo(locationHandle, true);
+                        }
+                        case ERROR -> throw new TrinoException(HIVE_TABLE_READ_ONLY, "Unpartitioned Hive tables are immutable");
+                        default -> throw new IllegalArgumentException("Unsupported insert existing table behavior: " + insertExistingPartitionsBehavior);
+                    };
                 }
 
                 schema.putAll(getHiveSchema(table));
@@ -670,14 +668,10 @@ public class HiveWriterFactory
     private String computeAcidSubdir(AcidTransaction transaction)
     {
         long writeId = transaction.getWriteId();
-        switch (transaction.getOperation()) {
-            case INSERT:
-            case CREATE_TABLE:
-            case MERGE:
-                return deltaSubdir(writeId, 0);
-            default:
-                throw new UnsupportedOperationException("transaction operation is " + transaction.getOperation());
-        }
+        return switch (transaction.getOperation()) {
+            case INSERT, CREATE_TABLE, MERGE -> deltaSubdir(writeId, 0);
+            default -> throw new UnsupportedOperationException("transaction operation is " + transaction.getOperation());
+        };
     }
 
     private String computeFileName(OptionalInt bucketNumber)

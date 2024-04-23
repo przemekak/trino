@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Key;
-import com.google.inject.TypeLiteral;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorPlugin;
 import io.trino.spi.TrinoException;
@@ -107,7 +106,7 @@ class TestCreateTableTask
     @BeforeEach
     void setUp()
     {
-        StandaloneQueryRunner queryRunner = new StandaloneQueryRunner(testSessionBuilder()
+        QueryRunner queryRunner = new StandaloneQueryRunner(testSessionBuilder()
                 .setCatalog(TEST_CATALOG_NAME)
                 .build());
         metadata = new MockMetadata();
@@ -127,7 +126,7 @@ class TestCreateTableTask
                 "other_mock",
                 ImmutableMap.of());
 
-        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getServer().getInstance(Key.get(new TypeLiteral<Map<Class<? extends Statement>, DataDefinitionTask<?>>>() {}));
+        Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks = queryRunner.getCoordinator().getInstance(new Key<>() {});
         createTableTask = (CreateTableTask) tasks.get(CreateTable.class);
         this.queryRunner = queryRunner;
     }

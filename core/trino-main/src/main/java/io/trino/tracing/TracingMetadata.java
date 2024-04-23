@@ -45,6 +45,7 @@ import io.trino.metadata.TableSchema;
 import io.trino.metadata.TableVersion;
 import io.trino.metadata.ViewDefinition;
 import io.trino.metadata.ViewInfo;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.BeginTableExecuteResult;
@@ -58,6 +59,8 @@ import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.JoinApplicationResult;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -100,7 +103,6 @@ import io.trino.spi.statistics.TableStatisticsMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.planner.PartitioningHandle;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.Collection;
 import java.util.List;
@@ -110,6 +112,7 @@ import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
 
 import static io.trino.tracing.ScopedSpan.scopedSpan;
 import static java.util.Objects.requireNonNull;
@@ -256,7 +259,7 @@ public class TracingMetadata
     {
         Span span = startSpan("getCommonPartitioning");
         if (span.isRecording() && left.getCatalogHandle().equals(right.getCatalogHandle()) && left.getCatalogHandle().isPresent()) {
-            span.setAttribute(TrinoAttributes.CATALOG, left.getCatalogHandle().get().getCatalogName());
+            span.setAttribute(TrinoAttributes.CATALOG, left.getCatalogHandle().get().getCatalogName().toString());
         }
         try (var ignored = scopedSpan(span)) {
             return delegate.getCommonPartitioning(session, left, right);
@@ -516,6 +519,15 @@ public class TracingMetadata
     }
 
     @Override
+    public void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle column)
+    {
+        Span span = startSpan("dropNotNullConstraint", tableHandle);
+        try (var ignored = scopedSpan(span)) {
+            delegate.dropNotNullConstraint(session, tableHandle, column);
+        }
+    }
+
+    @Override
     public void setTableAuthorization(Session session, CatalogSchemaTableName table, TrinoPrincipal principal)
     {
         Span span = startSpan("setTableAuthorization", table);
@@ -590,9 +602,9 @@ public class TracingMetadata
     @Override
     public Optional<ConnectorOutputMetadata> finishCreateTable(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishCreateTable", tableHandle.getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishCreateTable", tableHandle.catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.connectorHandle().toString());
         }
         try (var ignored = scopedSpan(span)) {
             return delegate.finishCreateTable(session, tableHandle, fragments, computedStatistics);
@@ -611,7 +623,7 @@ public class TracingMetadata
     @Override
     public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(Session session, CatalogHandle catalogHandle, ConnectorTableMetadata tableMetadata)
     {
-        Span span = startSpan("getStatisticsCollectionMetadataForWrite", catalogHandle.getCatalogName(), tableMetadata);
+        Span span = startSpan("getStatisticsCollectionMetadataForWrite", catalogHandle.getCatalogName().toString(), tableMetadata);
         try (var ignored = scopedSpan(span)) {
             return delegate.getStatisticsCollectionMetadataForWrite(session, catalogHandle, tableMetadata);
         }
@@ -638,9 +650,9 @@ public class TracingMetadata
     @Override
     public void finishStatisticsCollection(Session session, AnalyzeTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishStatisticsCollection", tableHandle.getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishStatisticsCollection", tableHandle.catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.connectorHandle().toString());
         }
         try (var ignored = scopedSpan(span)) {
             delegate.finishStatisticsCollection(session, tableHandle, computedStatistics);
@@ -684,14 +696,14 @@ public class TracingMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishInsert", tableHandle.getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishInsert", tableHandle.catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.connectorHandle().toString());
         }
         try (var ignored = scopedSpan(span)) {
-            return delegate.finishInsert(session, tableHandle, fragments, computedStatistics);
+            return delegate.finishInsert(session, tableHandle, sourceTableHandles, fragments, computedStatistics);
         }
     }
 
@@ -820,9 +832,9 @@ public class TracingMetadata
     @Override
     public void finishMerge(Session session, MergeHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishMerge", tableHandle.getTableHandle().getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishMerge", tableHandle.tableHandle().catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getTableHandle().getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.tableHandle().connectorHandle().toString());
         }
         try (var ignored = scopedSpan(span)) {
             delegate.finishMerge(session, tableHandle, fragments, computedStatistics);
@@ -884,6 +896,15 @@ public class TracingMetadata
     }
 
     @Override
+    public Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName)
+    {
+        Span span = startSpan("getViewProperties", viewName);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.getViewProperties(session, viewName);
+        }
+    }
+
+    @Override
     public Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName)
     {
         Span span = startSpan("getSchemaProperties", schemaName);
@@ -902,11 +923,11 @@ public class TracingMetadata
     }
 
     @Override
-    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace)
+    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> properties, boolean replace)
     {
         Span span = startSpan("createView", viewName);
         try (var ignored = scopedSpan(span)) {
-            delegate.createView(session, viewName, definition, replace);
+            delegate.createView(session, viewName, definition, properties, replace);
         }
     }
 
@@ -995,8 +1016,8 @@ public class TracingMetadata
     public Optional<JoinApplicationResult<TableHandle>> applyJoin(Session session, JoinType joinType, TableHandle left, TableHandle right, ConnectorExpression joinCondition, Map<String, ColumnHandle> leftAssignments, Map<String, ColumnHandle> rightAssignments, JoinStatistics statistics)
     {
         Span span = startSpan("applyJoin");
-        if (span.isRecording() && left.getCatalogHandle().equals(right.getCatalogHandle())) {
-            span.setAttribute(TrinoAttributes.CATALOG, left.getCatalogHandle().getCatalogName());
+        if (span.isRecording() && left.catalogHandle().equals(right.catalogHandle())) {
+            span.setAttribute(TrinoAttributes.CATALOG, left.catalogHandle().getCatalogName().toString());
         }
         try (var ignored = scopedSpan(span)) {
             return delegate.applyJoin(session, joinType, left, right, joinCondition, leftAssignments, rightAssignments, statistics);
@@ -1016,8 +1037,8 @@ public class TracingMetadata
     public Optional<TableFunctionApplicationResult<TableHandle>> applyTableFunction(Session session, TableFunctionHandle handle)
     {
         Span span = startSpan("applyTableFunction")
-                .setAttribute(TrinoAttributes.CATALOG, handle.getCatalogHandle().getCatalogName())
-                .setAttribute(TrinoAttributes.HANDLE, handle.getFunctionHandle().toString());
+                .setAttribute(TrinoAttributes.CATALOG, handle.catalogHandle().getCatalogName().toString())
+                .setAttribute(TrinoAttributes.HANDLE, handle.functionHandle().toString());
         try (var ignored = scopedSpan(span)) {
             return delegate.applyTableFunction(session, handle);
         }
@@ -1195,6 +1216,39 @@ public class TracingMetadata
     }
 
     @Override
+    public Set<EntityPrivilege> getAllEntityKindPrivileges(String entityKind)
+    {
+        return delegate.getAllEntityKindPrivileges(entityKind);
+    }
+
+    @Override
+    public void grantEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan("grantEntityPrivileges", entity, privileges, grantee, grantOption);
+        try (var ignored = scopedSpan(span)) {
+            delegate.grantEntityPrivileges(session, entity, privileges, grantee, grantOption);
+        }
+    }
+
+    @Override
+    public void denyEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee)
+    {
+        Span span = startSpan("denyEntityPrivileges", entity, privileges, grantee, false);
+        try (var ignored = scopedSpan(span)) {
+            delegate.denyEntityPrivileges(session, entity, privileges, grantee);
+        }
+    }
+
+    @Override
+    public void revokeEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan("revokeEntityPrivileges", entity, privileges, grantee, grantOption);
+        try (var ignored = scopedSpan(span)) {
+            delegate.revokeEntityPrivileges(session, entity, privileges, grantee, grantOption);
+        }
+    }
+
+    @Override
     public Collection<FunctionMetadata> listGlobalFunctions(Session session)
     {
         Span span = startSpan("listGlobalFunctions");
@@ -1210,13 +1264,6 @@ public class TracingMetadata
         try (var ignored = scopedSpan(span)) {
             return delegate.listFunctions(session, schema);
         }
-    }
-
-    @Override
-    public ResolvedFunction decodeFunction(QualifiedName name)
-    {
-        // no tracing since it doesn't call any connector
-        return delegate.decodeFunction(name);
     }
 
     @Override
@@ -1271,8 +1318,8 @@ public class TracingMetadata
     public AggregationFunctionMetadata getAggregationFunctionMetadata(Session session, ResolvedFunction resolvedFunction)
     {
         Span span = startSpan("getAggregationFunctionMetadata")
-                .setAttribute(TrinoAttributes.CATALOG, resolvedFunction.getCatalogHandle().getCatalogName())
-                .setAttribute(TrinoAttributes.FUNCTION, resolvedFunction.getSignature().getName().toString());
+                .setAttribute(TrinoAttributes.CATALOG, resolvedFunction.catalogHandle().getCatalogName().toString())
+                .setAttribute(TrinoAttributes.FUNCTION, resolvedFunction.signature().getName().toString());
         try (var ignored = scopedSpan(span)) {
             return delegate.getAggregationFunctionMetadata(session, resolvedFunction);
         }
@@ -1489,6 +1536,11 @@ public class TracingMetadata
                 .startSpan();
     }
 
+    private Span startSpan(String methodName, CatalogName catalogName)
+    {
+        return startSpan(methodName, catalogName.toString());
+    }
+
     private Span startSpan(String methodName, String catalogName)
     {
         return startSpan(methodName)
@@ -1510,9 +1562,9 @@ public class TracingMetadata
     private Span startSpan(String methodName, QualifiedObjectName table)
     {
         return startSpan(methodName)
-                .setAttribute(TrinoAttributes.CATALOG, table.getCatalogName())
-                .setAttribute(TrinoAttributes.SCHEMA, table.getSchemaName())
-                .setAttribute(TrinoAttributes.TABLE, table.getObjectName());
+                .setAttribute(TrinoAttributes.CATALOG, table.catalogName())
+                .setAttribute(TrinoAttributes.SCHEMA, table.schemaName())
+                .setAttribute(TrinoAttributes.TABLE, table.objectName());
     }
 
     private Span startSpan(String methodName, CatalogSchemaTableName table)
@@ -1543,8 +1595,8 @@ public class TracingMetadata
     {
         Span span = startSpan(methodName);
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.CATALOG, handle.getCatalogHandle().getCatalogName());
-            span.setAttribute(TrinoAttributes.HANDLE, handle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.CATALOG, handle.catalogHandle().getCatalogName().toString());
+            span.setAttribute(TrinoAttributes.HANDLE, handle.connectorHandle().toString());
         }
         return span;
     }
@@ -1553,8 +1605,8 @@ public class TracingMetadata
     {
         Span span = startSpan(methodName);
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.CATALOG, handle.getCatalogHandle().getCatalogName());
-            span.setAttribute(TrinoAttributes.HANDLE, handle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.CATALOG, handle.catalogHandle().getCatalogName().toString());
+            span.setAttribute(TrinoAttributes.HANDLE, handle.connectorHandle().toString());
         }
         return span;
     }
@@ -1565,5 +1617,30 @@ public class TracingMetadata
                 .setAttribute(TrinoAttributes.CATALOG, table.getCatalogName())
                 .setAttribute(TrinoAttributes.SCHEMA, table.getSchemaName())
                 .setAttribute(TrinoAttributes.FUNCTION, table.getFunctionName());
+    }
+
+    private Span startSpan(String methodName, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan(methodName);
+        if (span.isRecording()) {
+            String grant = String.format("%s-%s-%s-%s-%s%s",
+                    entity.entityKind(),
+                    entity.name(),
+                    grantee.getType(),
+                    grantee.getName(),
+                    privileges.stream().map(EntityPrivilege::name).collect(Collectors.joining("-")),
+                    grantOption ? "-grantOption" : "");
+            span.setAttribute(TrinoAttributes.PRIVILEGE_GRANT, grant);
+        }
+        return span;
+    }
+
+    private Span startSpan(String methodName, EntityKindAndName entity)
+    {
+        Span span = startSpan(methodName);
+        if (span.isRecording()) {
+            span.setAttribute(TrinoAttributes.ENTITY, String.format("%s-%s", entity.entityKind(), entity.name()));
+        }
+        return span;
     }
 }

@@ -29,6 +29,7 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
 import io.trino.operator.OperatorStats;
+import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.TestingHivePlugin;
 import io.trino.plugin.iceberg.fileio.ForwardingFileIo;
 import io.trino.server.DynamicFilterService;
@@ -46,9 +47,9 @@ import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.MaterializedRow;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.TestTable;
 import org.apache.avro.Schema;
@@ -66,11 +67,12 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Isolated;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -117,7 +119,7 @@ import static io.trino.plugin.iceberg.IcebergSplitManager.ICEBERG_DOMAIN_COMPACT
 import static io.trino.plugin.iceberg.IcebergTestUtils.getFileSystemFactory;
 import static io.trino.plugin.iceberg.IcebergTestUtils.withSmallRowGroups;
 import static io.trino.plugin.iceberg.IcebergUtil.TRINO_QUERY_ID_NAME;
-import static io.trino.plugin.iceberg.procedure.RegisterTableProcedure.getLatestMetadataLocation;
+import static io.trino.plugin.iceberg.IcebergUtil.getLatestMetadataLocation;
 import static io.trino.spi.predicate.Domain.multipleValues;
 import static io.trino.spi.predicate.Domain.singleValue;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -135,6 +137,7 @@ import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.testing.TransactionBuilder.transaction;
 import static io.trino.testing.assertions.Assert.assertEventually;
+import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static java.lang.String.format;
 import static java.lang.String.join;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -150,12 +153,14 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.IntStream.range;
+import static org.apache.iceberg.TableMetadata.newTableMetadata;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.offset;
 import static org.junit.jupiter.api.Assumptions.abort;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@Isolated // TODO remove
 @TestInstance(PER_CLASS)
 public abstract class BaseIcebergConnectorTest
         extends BaseConnectorTest
@@ -359,7 +364,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery("SELECT part FROM " + tableName, "VALUES cast('NaN' as real)");
         assertQuery("SELECT id FROM " + tableName + " WHERE is_nan(part)", "VALUES 1");
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -371,7 +376,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery("SELECT part FROM " + tableName, "VALUES cast('NaN' as double)");
         assertQuery("SELECT id FROM " + tableName + " WHERE is_nan(part)", "VALUES 1");
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -410,7 +415,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate(format("CREATE TABLE test_iceberg_decimal (x %s)", decimalType));
         assertUpdate(format("INSERT INTO test_iceberg_decimal (x) VALUES (CAST('%s' AS %s))", decimalValue, decimalType), 1);
         assertQuery("SELECT * FROM test_iceberg_decimal", format("SELECT CAST('%s' AS %s)", decimalValue, decimalType));
-        dropTable("test_iceberg_decimal");
+        assertUpdate("DROP TABLE test_iceberg_decimal");
     }
 
     @Test
@@ -439,7 +444,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery(format("SELECT x FROM %s WHERE x = TIME '9:00:00'", tableName), "SELECT CAST('9:00:00' AS TIME)");
         assertQuery(format("SELECT x FROM %s WHERE y = 12345", tableName), "SELECT CAST('10:12:34' AS TIME)");
         assertQuery(format("SELECT x FROM %s WHERE y = 67890", tableName), "SELECT CAST('9:00:00' AS TIME)");
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -473,7 +478,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery(format("SELECT * from %s WHERE _timestamp > TIMESTAMP '2017-06-01 10:12:34' AND _timestamp < TIMESTAMP '2018-05-01 10:12:34'", tableName), select2);
         assertQuery(format("SELECT * from %s WHERE _timestamp = TIMESTAMP '2018-05-01 10:12:34'", tableName), select3);
         assertQuery(format("SELECT * from %s WHERE _timestamp > TIMESTAMP '2018-01-01 10:12:34'", tableName), select3);
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1028,7 +1033,7 @@ public abstract class BaseIcebergConnectorTest
                 "  partitioning = ARRAY['_date']" +
                 ")");
 
-        dropTable("test_partitioned_table_nested_type");
+        assertUpdate("DROP TABLE test_partitioned_table_nested_type");
     }
 
     @Test
@@ -1082,7 +1087,7 @@ public abstract class BaseIcebergConnectorTest
 
         assertQuery("SELECT * from test_create_partitioned_table_as", "SELECT orderkey, shippriority, orderstatus FROM orders");
 
-        dropTable("test_create_partitioned_table_as");
+        assertUpdate("DROP TABLE test_create_partitioned_table_as");
     }
 
     @Test
@@ -1112,7 +1117,7 @@ public abstract class BaseIcebergConnectorTest
         @Language("SQL") String sql = format("CREATE TABLE %s (%s bigint) WITH (partitioning = ARRAY['%s'])", tableName, columnName, partitioningField);
         if (success) {
             assertUpdate(sql);
-            dropTable(tableName);
+            assertUpdate("DROP TABLE " + tableName);
         }
         else {
             assertQueryFails(sql, "Unable to parse partitioning value: .*");
@@ -1228,7 +1233,7 @@ public abstract class BaseIcebergConnectorTest
                 CROSS JOIN UNNEST (sequence(1, 10_000)) a(i)
                 """.formatted(tableName, values, highValues, lowValues), 30000);
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1238,7 +1243,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("" +
                 "CREATE TABLE " + tableName + " (a_boolean boolean, an_integer integer) " +
                 "  WITH (partitioning = ARRAY['an_integer'], sorted_by = ARRAY[])");
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1258,7 +1263,7 @@ public abstract class BaseIcebergConnectorTest
     {
         String tableName = "test_create_sorted_table_with_quotes_" + randomNameSuffix();
         assertUpdate(format("CREATE TABLE %s (%s bigint) WITH (sorted_by = ARRAY['%s'])", tableName, columnName, sortField));
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1276,8 +1281,9 @@ public abstract class BaseIcebergConnectorTest
     private void testCreateSortedTableWithSortTransform(String columnName, String sortField)
     {
         String tableName = "test_sort_with_transform_" + randomNameSuffix();
-        assertThatThrownBy(() -> query(format("CREATE TABLE %s (%s TIMESTAMP(6)) WITH (sorted_by = ARRAY['%s'])", tableName, columnName, sortField)))
-                .hasMessageContaining("Unable to parse sort field");
+        assertThat(query(format("CREATE TABLE %s (%s TIMESTAMP(6)) WITH (sorted_by = ARRAY['%s'])", tableName, columnName, sortField)))
+                // TODO throw TrinoException indicating user error
+                .nonTrinoExceptionFailure().hasMessageContaining("Unable to parse sort field");
     }
 
     @Test
@@ -1379,15 +1385,17 @@ public abstract class BaseIcebergConnectorTest
     public void testSortingOnNestedField()
     {
         String tableName = "test_sorting_on_nested_field" + randomNameSuffix();
-        assertThatThrownBy(() -> query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
+        assertThat(query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
                 "WITH (sorted_by = ARRAY['row_t.comment'])"))
-                .hasMessageContaining("Unable to parse sort field: [row_t.comment]");
-        assertThatThrownBy(() -> query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
+                // TODO throw TrinoException indicating user error
+                .nonTrinoExceptionFailure().hasMessageContaining("Unable to parse sort field: [row_t.comment]");
+        assertThat(query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
                 "WITH (sorted_by = ARRAY['\"row_t\".\"comment\"'])"))
-                .hasMessageContaining("Unable to parse sort field: [\"row_t\".\"comment\"]");
-        assertThatThrownBy(() -> query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
+                // TODO throw TrinoException indicating user error
+                .nonTrinoExceptionFailure().hasMessageContaining("Unable to parse sort field: [\"row_t\".\"comment\"]");
+        assertThat(query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
                 "WITH (sorted_by = ARRAY['\"row_t.comment\"'])"))
-                .hasMessageContaining("Column not found: row_t.comment");
+                .failure().hasMessageContaining("Column not found: row_t.comment");
     }
 
     @Test
@@ -1399,8 +1407,8 @@ public abstract class BaseIcebergConnectorTest
                 "test_dropping_sort_column",
                 "WITH (sorted_by = ARRAY['comment']) AS SELECT * FROM nation WITH NO DATA")) {
             assertUpdate(withSmallRowGroups, "INSERT INTO " + table.getName() + " SELECT * FROM nation", 25);
-            assertThatThrownBy(() -> query("ALTER TABLE " + table.getName() + " DROP COLUMN comment"))
-                    .hasMessageContaining("Cannot find source column for sort field");
+            assertThat(query("ALTER TABLE " + table.getName() + " DROP COLUMN comment"))
+                    .failure().hasMessageContaining("Cannot find source column for sort field");
         }
     }
 
@@ -1437,12 +1445,12 @@ public abstract class BaseIcebergConnectorTest
 
         assertUpdate("COMMENT ON TABLE test_table_comments IS NULL");
         assertThat(computeScalar("SHOW CREATE TABLE test_table_comments")).isEqualTo(createTableWithoutComment);
-        dropTable("iceberg.tpch.test_table_comments");
+        assertUpdate("DROP TABLE iceberg.tpch.test_table_comments");
 
         assertUpdate(createTableWithoutComment);
         assertThat(computeScalar("SHOW CREATE TABLE test_table_comments")).isEqualTo(createTableWithoutComment);
 
-        dropTable("iceberg.tpch.test_table_comments");
+        assertUpdate("DROP TABLE iceberg.tpch.test_table_comments");
     }
 
     @Test
@@ -1477,7 +1485,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate(format("CALL system.rollback_to_snapshot('tpch', 'test_rollback', %s)", afterSecondInsertId));
         assertQuery("SELECT * FROM test_rollback ORDER BY col0", "VALUES (789, CAST(987 AS BIGINT))");
 
-        dropTable("test_rollback");
+        assertUpdate("DROP TABLE test_rollback");
     }
 
     @Override
@@ -1498,7 +1506,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery("SELECT * FROM test_schema_evolution_drop_end", "VALUES(0, 1, NULL)");
         assertUpdate("INSERT INTO test_schema_evolution_drop_end VALUES (3, 4, 5)", 1);
         assertQuery("SELECT * FROM test_schema_evolution_drop_end", "VALUES(0, 1, NULL), (3, 4, 5)");
-        dropTable("test_schema_evolution_drop_end");
+        assertUpdate("DROP TABLE test_schema_evolution_drop_end");
 
         assertUpdate("CREATE TABLE test_schema_evolution_drop_middle (col0 INTEGER, col1 INTEGER, col2 INTEGER)");
         assertUpdate("INSERT INTO test_schema_evolution_drop_middle VALUES (0, 1, 2)", 1);
@@ -1508,7 +1516,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("ALTER TABLE test_schema_evolution_drop_middle ADD COLUMN col1 INTEGER");
         assertUpdate("INSERT INTO test_schema_evolution_drop_middle VALUES (3, 4, 5)", 1);
         assertQuery("SELECT * FROM test_schema_evolution_drop_middle", "VALUES(0, 2, NULL), (3, 4, 5)");
-        dropTable("test_schema_evolution_drop_middle");
+        assertUpdate("DROP TABLE test_schema_evolution_drop_middle");
     }
 
     @Test
@@ -1528,7 +1536,7 @@ public abstract class BaseIcebergConnectorTest
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN id", "Cannot drop partition field: id");
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN name", "Cannot drop partition field: name");
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN age", "Cannot drop partition field: age");
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1540,7 +1548,7 @@ public abstract class BaseIcebergConnectorTest
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN id", "Cannot drop column which is used by an old partition spec: id");
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN name", "Cannot drop column which is used by an old partition spec: name");
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN age", "Cannot drop column which is used by an old partition spec: age");
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1611,7 +1619,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_in_predicate_large_set WHERE " + filter))
                 .matches("TABLE test_in_predicate_large_set");
 
-        dropTable("test_in_predicate_large_set");
+        assertUpdate("DROP TABLE test_in_predicate_large_set");
     }
 
     @Test
@@ -1700,7 +1708,7 @@ public abstract class BaseIcebergConnectorTest
                 )""",
                 format,
                 getTableLocation("test_create_table_like_copy2")));
-        dropTable("test_create_table_like_copy2");
+        assertUpdate("DROP TABLE test_create_table_like_copy2");
 
         assertQueryFails("CREATE TABLE test_create_table_like_copy3 (LIKE test_create_table_like_original INCLUDING PROPERTIES)",
                 "Cannot create a table on a non-empty location.*");
@@ -1723,7 +1731,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("CREATE TABLE test_predicating_on_real (col REAL)");
         assertUpdate("INSERT INTO test_predicating_on_real VALUES 1.2", 1);
         assertQuery("SELECT * FROM test_predicating_on_real WHERE col = 1.2", "VALUES 1.2");
-        dropTable("test_predicating_on_real");
+        assertUpdate("DROP TABLE test_predicating_on_real");
     }
 
     @Test
@@ -1973,7 +1981,7 @@ public abstract class BaseIcebergConnectorTest
                 .containsAll("VALUES 1, 8, 9, 10")
                 .isFullyPushedDown();
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -2074,7 +2082,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_day_transform_date WHERE date_trunc('year', d) = DATE '2015-01-01'"))
                 .isFullyPushedDown();
 
-        dropTable("test_day_transform_date");
+        assertUpdate("DROP TABLE test_day_transform_date");
     }
 
     @Test
@@ -2186,7 +2194,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_day_transform_timestamp WHERE date_trunc('year', d) = DATE '2015-01-01'"))
                 .isFullyPushedDown();
 
-        dropTable("test_day_transform_timestamp");
+        assertUpdate("DROP TABLE test_day_transform_timestamp");
     }
 
     @Test
@@ -2421,7 +2429,7 @@ public abstract class BaseIcebergConnectorTest
                             "  (NULL, NULL, NULL, NULL, 15e0, NULL, NULL)");
         }
 
-        dropTable("test_month_transform_date");
+        assertUpdate("DROP TABLE test_month_transform_date");
     }
 
     @Test
@@ -2528,7 +2536,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_month_transform_timestamp WHERE date_trunc('year', d) = DATE '2015-01-01'"))
                 .isFullyPushedDown();
 
-        dropTable("test_month_transform_timestamp");
+        assertUpdate("DROP TABLE test_month_transform_timestamp");
     }
 
     @Test
@@ -2754,7 +2762,7 @@ public abstract class BaseIcebergConnectorTest
                             "  (NULL, NULL, NULL, NULL, 13e0, NULL, NULL)");
         }
 
-        dropTable("test_year_transform_date");
+        assertUpdate("DROP TABLE test_year_transform_date");
     }
 
     @Test
@@ -2856,7 +2864,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_year_transform_timestamp WHERE date_trunc('year', d) = DATE '2015-01-01'"))
                 .isFullyPushedDown();
 
-        dropTable("test_year_transform_timestamp");
+        assertUpdate("DROP TABLE test_year_transform_timestamp");
     }
 
     @Test
@@ -3025,7 +3033,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_truncate_text_transform WHERE d LIKE 'abc%'"))
                 .isNotFullyPushedDown(FilterNode.class);
 
-        dropTable("test_truncate_text_transform");
+        assertUpdate("DROP TABLE test_truncate_text_transform");
     }
 
     @Test
@@ -3125,7 +3133,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM " + table + " WHERE d >= 11"))
                 .isNotFullyPushedDown(FilterNode.class);
 
-        dropTable(table);
+        assertUpdate("DROP TABLE " + table);
     }
 
     @Test
@@ -3198,7 +3206,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM test_truncate_decimal_transform WHERE d >= 12.21"))
                 .isNotFullyPushedDown(FilterNode.class);
 
-        dropTable("test_truncate_decimal_transform");
+        assertUpdate("DROP TABLE test_truncate_decimal_transform");
     }
 
     @Test
@@ -3243,8 +3251,9 @@ public abstract class BaseIcebergConnectorTest
         }
 
         assertThat(query("SHOW STATS FOR " + tableName))
-                .skippingTypesCheck()
+                .result()
                 .exceptColumns("data_size", "low_value", "high_value") // these may vary between types
+                .skippingTypesCheck()
                 .matches("VALUES " +
                         "  ('d', 3e0, " + (format == AVRO ? "0.1e0" : "0.25e0") + ", NULL), " +
                         "  (NULL, NULL, NULL, 4e0)");
@@ -3262,7 +3271,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SELECT * FROM " + tableName + " WHERE d >= " + valueInOtherBucket))
                 .isNotFullyPushedDown(FilterNode.class);
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -3381,7 +3390,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("DELETE FROM test_metadata_delete_simple WHERE col1 = 1", 3);
         assertQuery("SELECT sum(col2) FROM test_metadata_delete_simple", "SELECT 701");
         assertQuery("SELECT count(*) FROM \"test_metadata_delete_simple$partitions\"", "SELECT 2");
-        dropTable("test_metadata_delete_simple");
+        assertUpdate("DROP TABLE test_metadata_delete_simple");
     }
 
     @Test
@@ -3413,7 +3422,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery("SELECT count(*) FROM \"test_metadata_delete$partitions\"", "SELECT 6");
         assertQuery("SELECT * FROM test_metadata_delete", "SELECT orderkey, linenumber, linestatus FROM lineitem WHERE linestatus <> 'O' AND linenumber <> 3");
 
-        dropTable("test_metadata_delete");
+        assertUpdate("DROP TABLE test_metadata_delete");
     }
 
     @Test
@@ -3436,7 +3445,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate(format("INSERT INTO test_in_set VALUES %s", values), inCount);
         // This proves that SELECTs with large IN phrases work correctly
         computeActual(format("SELECT col1 FROM test_in_set WHERE col1 IN (%s)", inList));
-        dropTable("test_in_set");
+        assertUpdate("DROP TABLE test_in_set");
     }
 
     @Test
@@ -3486,7 +3495,7 @@ public abstract class BaseIcebergConnectorTest
         }
         assertThat(result).containsExactlyElementsOf(expectedStatistics);
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     /**
@@ -3626,7 +3635,7 @@ public abstract class BaseIcebergConnectorTest
         }
         assertThat(result).containsExactlyElementsOf(expectedStatistics);
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -3740,7 +3749,7 @@ public abstract class BaseIcebergConnectorTest
         row2 = result.getMaterializedRows().get(2);
         assertThat(row2.getField(4)).isEqualTo(17.0);
 
-        dropTable("iceberg.tpch.test_partitioned_table_statistics");
+        assertUpdate("DROP TABLE iceberg.tpch.test_partitioned_table_statistics");
     }
 
     @Test
@@ -3790,7 +3799,22 @@ public abstract class BaseIcebergConnectorTest
                 // Unenforced predicate is simplified during split generation, but not reflected here
                 ImmutableMap.of("col1", multipleValues(BIGINT, values)));
 
-        dropTable(tableName.getObjectName());
+        assertUpdate("DROP TABLE " + tableName.objectName());
+    }
+
+    @Test
+    public void testPredicateOnDataColumnIsNotPushedDown()
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_predicate_on_data_column_is_not_pushed_down",
+                "(a integer)")) {
+            assertThat(query("SELECT * FROM " + testTable.getName() + " WHERE a = 10"))
+                    .isNotFullyPushedDown(FilterNode.class);
+            assertUpdate("INSERT INTO " + testTable.getName() + " VALUES 10", 1);
+            assertThat(query("SELECT * FROM " + testTable.getName() + " WHERE a = 10"))
+                    .isNotFullyPushedDown(FilterNode.class);
+        }
     }
 
     @Test
@@ -3810,7 +3834,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery("SELECT id FROM " + tableName + " WHERE struct_t = ROW(21, 22)", "VALUES 21");
         assertQuery("SELECT struct_t.f1  FROM " + tableName + " WHERE id = 11 AND map_t = MAP(ARRAY[11, 13], ARRAY[12, 14])", "VALUES 11");
 
-        dropTable(tableName);
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -3908,7 +3932,7 @@ public abstract class BaseIcebergConnectorTest
             assertThat((expectedUnenforcedPredicate == null && expectedEnforcedPredicate == null)).isEqualTo(result.isEmpty());
 
             if (result.isPresent()) {
-                IcebergTableHandle newTable = (IcebergTableHandle) result.get().getHandle().getConnectorHandle();
+                IcebergTableHandle newTable = (IcebergTableHandle) result.get().getHandle().connectorHandle();
 
                 assertThat(newTable.getEnforcedPredicate()).isEqualTo(TupleDomain.withColumnDomains(expectedEnforcedPredicate.entrySet().stream()
                         .collect(toImmutableMap(entry -> columns.get(entry.getKey()), Map.Entry::getValue))));
@@ -3917,6 +3941,40 @@ public abstract class BaseIcebergConnectorTest
                         .collect(toImmutableMap(entry -> columns.get(entry.getKey()), Map.Entry::getValue))));
             }
         });
+    }
+
+    @Test
+    public void testCreateExternalTableWithNonExistingSchemaLocation()
+            throws Exception
+    {
+        String schemaName = "test_schema_without_location" + randomNameSuffix();
+        String schemaLocation = "/tmp/" + schemaName;
+
+        fileSystem.createDirectory(Location.of(schemaLocation));
+        assertUpdate("CREATE SCHEMA iceberg." + schemaName + " WITH (location = '" + schemaLocation + "')");
+        fileSystem.deleteDirectory(Location.of(schemaLocation));
+
+        String tableName = "test_create_external" + randomNameSuffix();
+        String tableLocation = "/tmp/" + tableName;
+
+        String schemaAndTableName = format("%s.%s", schemaName, tableName);
+        assertUpdate("CREATE TABLE " + schemaAndTableName + " (a bigint, b varchar) WITH (location = '" + tableLocation + "')");
+
+        assertUpdate(
+                "INSERT INTO " + schemaAndTableName + "(a, b) VALUES" +
+                        "(NULL, NULL)," +
+                        "(-42, 'abc')," +
+                        "(9223372036854775807, 'abcdefghijklmnopqrstuvwxyz')",
+                3);
+        assertThat(query("SELECT * FROM " + schemaAndTableName))
+                .skippingTypesCheck()
+                .matches("VALUES" +
+                        "(NULL, NULL)," +
+                        "(-42, 'abc')," +
+                        "(9223372036854775807, 'abcdefghijklmnopqrstuvwxyz')");
+
+        assertUpdate("DROP TABLE " + schemaAndTableName);
+        assertUpdate("DROP SCHEMA " + schemaName);
     }
 
     @Test
@@ -3992,7 +4050,7 @@ public abstract class BaseIcebergConnectorTest
                             "  (NULL, NULL, NULL, NULL, 1e0, NULL, NULL)");
         }
 
-        dropTable("test_nested_table_1");
+        assertUpdate("DROP TABLE test_nested_table_1");
 
         assertUpdate("" +
                 "CREATE TABLE test_nested_table_2 (" +
@@ -4053,8 +4111,8 @@ public abstract class BaseIcebergConnectorTest
         assertThat(query("SHOW STATS FOR test_nested_table_3"))
                 .matches("SHOW STATS FOR test_nested_table_2");
 
-        dropTable("test_nested_table_2");
-        dropTable("test_nested_table_3");
+        assertUpdate("DROP TABLE test_nested_table_2");
+        assertUpdate("DROP TABLE test_nested_table_3");
     }
 
     @Test
@@ -4074,7 +4132,7 @@ public abstract class BaseIcebergConnectorTest
 
         assertQuery("SELECT * FROM test_read_isolation", "VALUES 123, 456, 789");
 
-        dropTable("test_read_isolation");
+        assertUpdate("DROP TABLE test_read_isolation");
     }
 
     private void withTransaction(Consumer<Session> consumer)
@@ -4082,13 +4140,6 @@ public abstract class BaseIcebergConnectorTest
         transaction(getQueryRunner().getTransactionManager(), getQueryRunner().getPlannerContext().getMetadata(), getQueryRunner().getAccessControl())
                 .readCommitted()
                 .execute(getSession(), consumer);
-    }
-
-    private void dropTable(String table)
-    {
-        Session session = getSession();
-        assertUpdate(session, "DROP TABLE " + table);
-        assertThat(getQueryRunner().tableExists(session, table)).isFalse();
     }
 
     @Test
@@ -4114,7 +4165,7 @@ public abstract class BaseIcebergConnectorTest
         // TODO: assert behavior after deleting the last row of a partition, once row-level deletes are supported.
         // i.e. a query like 'DELETE FROM test_metadata_optimization WHERE b = 6 AND a = 5'
 
-        dropTable("test_metadata_optimization");
+        assertUpdate("DROP TABLE test_metadata_optimization");
     }
 
     @Test
@@ -4181,11 +4232,12 @@ public abstract class BaseIcebergConnectorTest
         dataFile.put("file_size_in_bytes", alteredValue);
 
         // Write altered metadata
-        try (OutputStream out = fileSystem.newOutputFile(Location.of(manifestFile)).createOrOverwrite();
-                DataFileWriter<GenericData.Record> dataFileWriter = new DataFileWriter<>(new GenericDatumWriter<>(schema))) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (DataFileWriter<GenericData.Record> dataFileWriter = new DataFileWriter<>(new GenericDatumWriter<>(schema))) {
             dataFileWriter.create(schema, out);
             dataFileWriter.append(entry);
         }
+        fileSystem.newOutputFile(Location.of(manifestFile)).createOrOverwrite(out.toByteArray());
 
         // Ignoring Iceberg provided file size makes the query succeed
         Session session = Session.builder(getSession())
@@ -4198,7 +4250,7 @@ public abstract class BaseIcebergConnectorTest
                 "SELECT * FROM test_iceberg_file_size",
                 "(Malformed ORC file\\. Invalid file metadata.*)|(.*Malformed Parquet file.*)");
 
-        dropTable("test_iceberg_file_size");
+        assertUpdate("DROP TABLE test_iceberg_file_size");
     }
 
     protected DataFileReader<GenericData.Record> readManifestFile(String location)
@@ -4697,7 +4749,7 @@ public abstract class BaseIcebergConnectorTest
     {
         assertUpdate("CREATE TABLE test_iceberg_get_table_props (x BIGINT)");
         verifyIcebergTableProperties(computeActual("SELECT * FROM \"test_iceberg_get_table_props$properties\""));
-        dropTable("test_iceberg_get_table_props");
+        assertUpdate("DROP TABLE test_iceberg_get_table_props");
     }
 
     protected void verifyIcebergTableProperties(MaterializedResult actual)
@@ -4707,6 +4759,35 @@ public abstract class BaseIcebergConnectorTest
                 .row("write.format.default", format.name())
                 .row("write.parquet.compression-codec", "zstd").build();
         assertEqualsIgnoreOrder(actual.getMaterializedRows(), expected.getMaterializedRows());
+    }
+
+    @Test
+    public void testGetIcebergTableWithLegacyOrcBloomFilterProperties()
+            throws IOException
+    {
+        String tableName = "test_get_table_with_legacy_orc_bloom_filter_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 x, 'INDIA' y", 1);
+
+        String tableLocation = getTableLocation(tableName);
+        String metadataLocation = getLatestMetadataLocation(fileSystem, tableLocation);
+
+        TableMetadata tableMetadata = TableMetadataParser.read(new ForwardingFileIo(fileSystem), metadataLocation);
+        ImmutableMap<String, String> newProperties = ImmutableMap.<String, String>builder()
+                .putAll(tableMetadata.properties())
+                .put("orc.bloom.filter.columns", "x,y") // legacy incorrect property
+                .put("orc.bloom.filter.fpp", "0.2") // legacy incorrect property
+                .buildOrThrow();
+        TableMetadata newTableMetadata = newTableMetadata(
+                tableMetadata.schema(),
+                tableMetadata.spec(),
+                tableMetadata.sortOrder(),
+                tableMetadata.location(),
+                newProperties);
+        byte[] metadataJson = TableMetadataParser.toJson(newTableMetadata).getBytes(UTF_8);
+        fileSystem.newOutputFile(Location.of(metadataLocation)).createOrOverwrite(metadataJson);
+
+        assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName))
+                .contains("orc_bloom_filter_columns", "orc_bloom_filter_fpp");
     }
 
     protected abstract boolean supportsIcebergFileStatistics(String typeName);
@@ -4742,20 +4823,20 @@ public abstract class BaseIcebergConnectorTest
 
     private void verifySplitCount(String query, int expectedSplitCount)
     {
-        MaterializedResultWithQueryId selectAllPartitionsResult = getDistributedQueryRunner().executeWithQueryId(getSession(), query);
-        assertEqualsIgnoreOrder(selectAllPartitionsResult.getResult().getMaterializedRows(), computeActual(withoutPredicatePushdown(getSession()), query).getMaterializedRows());
-        verifySplitCount(selectAllPartitionsResult.getQueryId(), expectedSplitCount);
+        MaterializedResultWithPlan selectAllPartitionsResult = getDistributedQueryRunner().executeWithPlan(getSession(), query);
+        assertEqualsIgnoreOrder(selectAllPartitionsResult.result().getMaterializedRows(), computeActual(withoutPredicatePushdown(getSession()), query).getMaterializedRows());
+        verifySplitCount(selectAllPartitionsResult.queryId(), expectedSplitCount);
     }
 
     private void verifyPredicatePushdownDataRead(@Language("SQL") String query, boolean supportsPushdown)
     {
-        MaterializedResultWithQueryId resultWithPredicatePushdown = getDistributedQueryRunner().executeWithQueryId(getSession(), query);
-        MaterializedResultWithQueryId resultWithoutPredicatePushdown = getDistributedQueryRunner().executeWithQueryId(
+        MaterializedResultWithPlan resultWithPredicatePushdown = getDistributedQueryRunner().executeWithPlan(getSession(), query);
+        MaterializedResultWithPlan resultWithoutPredicatePushdown = getDistributedQueryRunner().executeWithPlan(
                 withoutPredicatePushdown(getSession()),
                 query);
 
-        DataSize withPushdownDataSize = getOperatorStats(resultWithPredicatePushdown.getQueryId()).getInputDataSize();
-        DataSize withoutPushdownDataSize = getOperatorStats(resultWithoutPredicatePushdown.getQueryId()).getInputDataSize();
+        DataSize withPushdownDataSize = getOperatorStats(resultWithPredicatePushdown.queryId()).getInputDataSize();
+        DataSize withoutPushdownDataSize = getOperatorStats(resultWithoutPredicatePushdown.queryId()).getInputDataSize();
         if (supportsPushdown) {
             assertThat(withPushdownDataSize).isLessThan(withoutPushdownDataSize);
         }
@@ -5157,7 +5238,7 @@ public abstract class BaseIcebergConnectorTest
         assertThat(allDataFilesAfterDelete).hasSize(6);
 
         // For optimize we need to set task_min_writer_count to 1, otherwise it will create more than one file.
-        computeActual(withSingleWriterPerTask(getSession()), "ALTER TABLE " + tableName + " EXECUTE OPTIMIZE WHERE regionkey = 4");
+        computeActual(withSingleWriterPerTask(getSession()), "ALTER TABLE " + tableName + " EXECUTE OPTIMIZE WHERE regionkey = 3");
         computeActual(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '0s')");
         computeActual(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')");
 
@@ -5167,7 +5248,7 @@ public abstract class BaseIcebergConnectorTest
         List<String> allDataFilesAfterOptimizeWithWhere = getAllDataFilesFromTableDirectory(tableName);
         assertThat(allDataFilesAfterOptimizeWithWhere)
                 .hasSize(6)
-                .doesNotContain(allDataFilesInitially.stream().filter(file -> file.contains("regionkey=4"))
+                .doesNotContain(allDataFilesInitially.stream().filter(file -> file.contains("regionkey=3"))
                         .toArray(String[]::new));
 
         assertThat(query("SELECT * FROM " + tableName))
@@ -5200,8 +5281,8 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("CREATE TABLE " + tableName + " (a) AS VALUES 11", 1);
         long snapshotId = getCurrentSnapshotId(tableName);
         assertUpdate("INSERT INTO " + tableName + " VALUES 22", 1);
-        assertThatThrownBy(() -> query("ALTER TABLE \"%s@%d\" EXECUTE OPTIMIZE".formatted(tableName, snapshotId)))
-                .hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
+        assertThat(query("ALTER TABLE \"%s@%d\" EXECUTE OPTIMIZE".formatted(tableName, snapshotId)))
+                .failure().hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
         assertThat(query("SELECT * FROM " + tableName))
                 .matches("VALUES 11, 22");
 
@@ -5211,10 +5292,10 @@ public abstract class BaseIcebergConnectorTest
     @Test
     public void testOptimizeSystemTable()
     {
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$files\" EXECUTE OPTIMIZE"))
-                .hasMessage("This connector does not support table procedures");
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$snapshots\" EXECUTE OPTIMIZE"))
-                .hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$files\" EXECUTE OPTIMIZE"))
+                .failure().hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$snapshots\" EXECUTE OPTIMIZE"))
+                .failure().hasMessage("This connector does not support table procedures");
     }
 
     private List<String> getActiveFiles(String tableName)
@@ -5333,11 +5414,11 @@ public abstract class BaseIcebergConnectorTest
     {
         assertUpdate("CREATE TABLE test_iceberg_recreate (a_int) AS VALUES (1)", 1);
         assertThat(query("SELECT min(a_int) FROM test_iceberg_recreate")).matches("VALUES 1");
-        dropTable("test_iceberg_recreate");
+        assertUpdate("DROP TABLE test_iceberg_recreate");
 
         assertUpdate("CREATE TABLE test_iceberg_recreate (a_varchar) AS VALUES ('Trino')", 1);
         assertThat(query("SELECT min(a_varchar) FROM test_iceberg_recreate")).matches("VALUES CAST('Trino' AS varchar)");
-        dropTable("test_iceberg_recreate");
+        assertUpdate("DROP TABLE test_iceberg_recreate");
     }
 
     @Test
@@ -5431,6 +5512,208 @@ public abstract class BaseIcebergConnectorTest
         assertThat(updatedFiles)
                 .hasSize(2)
                 .doesNotContainAnyElementsOf(initialFiles);
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testCollectingStatisticsWithPathColumnPredicate()
+    {
+        assertQuerySucceeds("EXPLAIN SELECT * FROM region WHERE \"$path\" = ''");
+
+        Session collectingStatisticsSession = Session.builder(getSession())
+                .setSystemProperty("collect_plan_statistics_for_all_queries", "true")
+                .build();
+        String tableName = "test_collect_statistics_with_path_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id integer, value integer)");
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 1)", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (2, 2)", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (3, null)", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (4, 4)", 1);
+
+        // Make sure the whole table has stats
+        MaterializedResult tableStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (SELECT * FROM %s WHERE \"$path\" IS NOT NULL)".formatted(tableName));
+        MaterializedResult expectedTableStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 4.0, 0.0, null, "1", "4")
+                        .row("value", null, 3.0, 0.25, null, "1", "4")
+                        .row(null, null, null, null, 4.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedTableStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 4.0, 0.0, null, null, null)
+                            .row("value", null, 3.0, 0.1, null, null, null)
+                            .row(null, null, null, null, 4.0, null, null)
+                            .build();
+        }
+        assertThat(tableStatistics).containsExactlyElementsOf(expectedTableStatistics);
+
+        String firstPath = (String) computeScalar(collectingStatisticsSession, "SELECT \"$path\" FROM " + tableName + " WHERE id = 1");
+        String secondPath = (String) computeScalar(collectingStatisticsSession, "SELECT \"$path\" FROM " + tableName + " WHERE id = 2");
+        String thirdPath = (String) computeScalar(collectingStatisticsSession, "SELECT \"$path\" FROM " + tableName + " WHERE id = 3");
+        String fourthPath = (String) computeScalar(collectingStatisticsSession, "SELECT \"$path\" FROM " + tableName + " WHERE id = 4");
+
+        String pathPredicateSql = "SELECT * FROM " + tableName + " WHERE \"$path\" = '%s'";
+        // Check the predicate with path
+        assertQuery(collectingStatisticsSession, pathPredicateSql.formatted(firstPath), "VALUES (1, 1)");
+        assertQuery(collectingStatisticsSession, pathPredicateSql.formatted(secondPath), "VALUES (2, 2)");
+        assertQuery(collectingStatisticsSession, "SELECT COUNT(*) FROM %s WHERE \"$path\" = '%s' OR \"$path\" = '%s'".formatted(tableName, thirdPath, fourthPath), "VALUES 2");
+
+        MaterializedResult firstPathStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (" + pathPredicateSql.formatted(firstPath) + ")");
+        MaterializedResult expectedFirstPathStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 1.0, 0.0, null, "1", "1")
+                        .row("value", null, 1.0, 0.0, null, "1", "1")
+                        .row(null, null, null, null, 1.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedFirstPathStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 1.0, 0.0, null, null, null)
+                            .row("value", null, 1.0, 0.0, null, null, null)
+                            .row(null, null, null, null, 1.0, null, null)
+                            .build();
+        }
+        assertThat(firstPathStatistics).containsExactlyElementsOf(expectedFirstPathStatistics);
+
+        MaterializedResult secondThirdPathStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (SELECT * FROM %s WHERE \"$path\" IN ('%s', '%s'))".formatted(tableName, secondPath, thirdPath));
+        MaterializedResult expectedSecondThirdPathStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 2.0, 0.0, null, "2", "3")
+                        .row("value", null, 1.0, 0.5, null, "2", "2")
+                        .row(null, null, null, null, 2.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedSecondThirdPathStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 2.0, 0.0, null, null, null)
+                            .row("value", null, 2.0, 0.0, null, null, null)
+                            .row(null, null, null, null, 2.0, null, null)
+                            .build();
+        }
+        assertThat(secondThirdPathStatistics).containsExactlyElementsOf(expectedSecondThirdPathStatistics);
+
+        MaterializedResult fourthPathStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (" + pathPredicateSql.formatted(fourthPath) + ")");
+        MaterializedResult expectedFourthPathStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 1.0, 0.0, null, "4", "4")
+                        .row("value", null, 1.0, 0.0, null, "4", "4")
+                        .row(null, null, null, null, 1.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedFourthPathStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 1.0, 0.0, null, null, null)
+                            .row("value", null, 1.0, 0.0, null, null, null)
+                            .row(null, null, null, null, 1.0, null, null)
+                            .build();
+        }
+        assertThat(fourthPathStatistics).containsExactlyElementsOf(expectedFourthPathStatistics);
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testCollectingStatisticsWithFileModifiedTimeColumnPredicate()
+            throws InterruptedException
+    {
+        assertQuerySucceeds("EXPLAIN SELECT * FROM region WHERE \"$file_modified_time\" = TIMESTAMP '2001-08-22 03:04:05.321 UTC'");
+
+        Session collectingStatisticsSession = Session.builder(getSession())
+                .setSystemProperty("collect_plan_statistics_for_all_queries", "true")
+                .build();
+        String tableName = "test_collect_statistics_with_file_modified_time_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id integer, value integer)");
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 1)", 1);
+        storageTimePrecision.sleep(1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (2, 2)", 1);
+        storageTimePrecision.sleep(1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (3, null)", 1);
+        storageTimePrecision.sleep(1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (4, 4)", 1);
+
+        // Make sure the whole table has stats
+        MaterializedResult tableStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (SELECT * FROM %s WHERE \"$file_modified_time\" IS NOT NULL)".formatted(tableName));
+        MaterializedResult expectedTableStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 4.0, 0.0, null, "1", "4")
+                        .row("value", null, 3.0, 0.25, null, "1", "4")
+                        .row(null, null, null, null, 4.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedTableStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 4.0, 0.0, null, null, null)
+                            .row("value", null, 3.0, 0.1, null, null, null)
+                            .row(null, null, null, null, 4.0, null, null)
+                            .build();
+        }
+        assertThat(tableStatistics).containsExactlyElementsOf(expectedTableStatistics);
+
+        ZonedDateTime firstFileModifiedTime = (ZonedDateTime) computeScalar(collectingStatisticsSession, "SELECT \"$file_modified_time\" FROM " + tableName + " WHERE id = 1");
+        ZonedDateTime secondFileModifiedTime = (ZonedDateTime) computeScalar(collectingStatisticsSession, "SELECT \"$file_modified_time\" FROM " + tableName + " WHERE id = 2");
+        ZonedDateTime thirdFileModifiedTime = (ZonedDateTime) computeScalar(collectingStatisticsSession, "SELECT \"$file_modified_time\" FROM " + tableName + " WHERE id = 3");
+        ZonedDateTime fourthFileModifiedTime = (ZonedDateTime) computeScalar(collectingStatisticsSession, "SELECT \"$file_modified_time\" FROM " + tableName + " WHERE id = 4");
+
+        String fileModifiedTimePredicateSql = "SELECT * FROM " + tableName + " WHERE \"$file_modified_time\" = from_iso8601_timestamp('%s')";
+        // Check the predicate with fileModifiedTime
+        assertQuery(collectingStatisticsSession, fileModifiedTimePredicateSql.formatted(firstFileModifiedTime.format(ISO_OFFSET_DATE_TIME)), "SELECT 1, 1");
+        assertQuery(collectingStatisticsSession, fileModifiedTimePredicateSql.formatted(secondFileModifiedTime.format(ISO_OFFSET_DATE_TIME)), "SELECT 2, 2");
+        assertQuery(collectingStatisticsSession, "SELECT COUNT(*) FROM %s WHERE \"$file_modified_time\" = from_iso8601_timestamp('%s') OR \"$file_modified_time\" = from_iso8601_timestamp('%s')".formatted(tableName, thirdFileModifiedTime.format(ISO_OFFSET_DATE_TIME), fourthFileModifiedTime.format(ISO_OFFSET_DATE_TIME)), "VALUES 2");
+
+        MaterializedResult firstFileModifiedTimeStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (" + fileModifiedTimePredicateSql.formatted(firstFileModifiedTime.format(ISO_OFFSET_DATE_TIME)) + ")");
+        MaterializedResult expectedFirstFileModifiedTimeStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 1.0, 0.0, null, "1", "1")
+                        .row("value", null, 1.0, 0.0, null, "1", "1")
+                        .row(null, null, null, null, 1.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedFirstFileModifiedTimeStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 1.0, 0.0, null, null, null)
+                            .row("value", null, 1.0, 0.0, null, null, null)
+                            .row(null, null, null, null, 1.0, null, null)
+                            .build();
+        }
+        assertThat(firstFileModifiedTimeStatistics).containsExactlyElementsOf(expectedFirstFileModifiedTimeStatistics);
+
+        MaterializedResult secondThirdFileModifiedTimeStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (SELECT * FROM %s WHERE \"$file_modified_time\" IN (from_iso8601_timestamp('%s'), from_iso8601_timestamp('%s')))".formatted(tableName, secondFileModifiedTime.format(ISO_OFFSET_DATE_TIME), thirdFileModifiedTime.format(ISO_OFFSET_DATE_TIME)));
+        MaterializedResult expectedSecondThirdFileModifiedTimetatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 2.0, 0.0, null, "2", "3")
+                        .row("value", null, 1.0, 0.5, null, "2", "2")
+                        .row(null, null, null, null, 2.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedSecondThirdFileModifiedTimetatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 2.0, 0.0, null, null, null)
+                            .row("value", null, 2.0, 0.0, null, null, null)
+                            .row(null, null, null, null, 2.0, null, null)
+                            .build();
+        }
+        assertThat(secondThirdFileModifiedTimeStatistics).containsExactlyElementsOf(expectedSecondThirdFileModifiedTimetatistics);
+
+        MaterializedResult fourthFileModifiedTimeStatistics = computeActual(collectingStatisticsSession, "SHOW STATS FOR (" + fileModifiedTimePredicateSql.formatted(fourthFileModifiedTime.format(ISO_OFFSET_DATE_TIME)) + ")");
+        MaterializedResult expectedFourthFileModifiedTimeStatistics =
+                resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                        .row("id", null, 1.0, 0.0, null, "4", "4")
+                        .row("value", null, 1.0, 0.0, null, "4", "4")
+                        .row(null, null, null, null, 1.0, null, null)
+                        .build();
+        if (format == AVRO) {
+            expectedFourthFileModifiedTimeStatistics =
+                    resultBuilder(collectingStatisticsSession, VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                            .row("id", null, 1.0, 0.0, null, null, null)
+                            .row("value", null, 1.0, 0.0, null, null, null)
+                            .row(null, null, null, null, 1.0, null, null)
+                            .build();
+        }
+        assertThat(fourthFileModifiedTimeStatistics).containsExactlyElementsOf(expectedFourthFileModifiedTimeStatistics);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -5612,8 +5895,8 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("CREATE TABLE " + tableName + " (a) AS VALUES 11", 1);
         long snapshotId = getCurrentSnapshotId(tableName);
         assertUpdate("INSERT INTO " + tableName + " VALUES 22", 1);
-        assertThatThrownBy(() -> query("ALTER TABLE \"%s@%d\" EXECUTE EXPIRE_SNAPSHOTS".formatted(tableName, snapshotId)))
-                .hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
+        assertThat(query("ALTER TABLE \"%s@%d\" EXECUTE EXPIRE_SNAPSHOTS".formatted(tableName, snapshotId)))
+                .failure().hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
         assertThat(query("SELECT * FROM " + tableName))
                 .matches("VALUES 11, 22");
 
@@ -5623,10 +5906,10 @@ public abstract class BaseIcebergConnectorTest
     @Test
     public void testExpireSnapshotsSystemTable()
     {
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$files\" EXECUTE EXPIRE_SNAPSHOTS"))
-                .hasMessage("This connector does not support table procedures");
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$snapshots\" EXECUTE EXPIRE_SNAPSHOTS"))
-                .hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$files\" EXECUTE EXPIRE_SNAPSHOTS"))
+                .failure().hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$snapshots\" EXECUTE EXPIRE_SNAPSHOTS"))
+                .failure().hasMessage("This connector does not support table procedures");
     }
 
     @Test
@@ -5638,7 +5921,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES ('two', 2)", 1);
 
         assertExplain("EXPLAIN ALTER TABLE " + tableName + " EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '0s')",
-                "SimpleTableExecute\\[table = iceberg:schemaTableName:tpch.test_expiring_snapshots.*\\{retentionThreshold=0\\.00s}.*");
+                "SimpleTableExecute\\[table = iceberg:schemaTableName:tpch.test_expiring_snapshots.*\\[retentionThreshold=0\\.00s].*");
     }
 
     @Test
@@ -5776,7 +6059,7 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES ('two', 2)", 1);
 
         assertExplain("EXPLAIN ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')",
-                "SimpleTableExecute\\[table = iceberg:schemaTableName:tpch.test_remove_orphan_files.*\\{retentionThreshold=0\\.00s}.*");
+                "SimpleTableExecute\\[table = iceberg:schemaTableName:tpch.test_remove_orphan_files.*\\[retentionThreshold=0\\.00s].*");
     }
 
     @Test
@@ -5804,8 +6087,8 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("CREATE TABLE " + tableName + " (a) AS VALUES 11", 1);
         long snapshotId = getCurrentSnapshotId(tableName);
         assertUpdate("INSERT INTO " + tableName + " VALUES 22", 1);
-        assertThatThrownBy(() -> query("ALTER TABLE \"%s@%d\" EXECUTE REMOVE_ORPHAN_FILES".formatted(tableName, snapshotId)))
-                .hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
+        assertThat(query("ALTER TABLE \"%s@%d\" EXECUTE REMOVE_ORPHAN_FILES".formatted(tableName, snapshotId)))
+                .failure().hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
         assertThat(query("SELECT * FROM " + tableName))
                 .matches("VALUES 11, 22");
 
@@ -5815,10 +6098,10 @@ public abstract class BaseIcebergConnectorTest
     @Test
     public void testRemoveOrphanFilesSystemTable()
     {
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$files\" EXECUTE REMOVE_ORPHAN_FILES"))
-                .hasMessage("This connector does not support table procedures");
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$snapshots\" EXECUTE REMOVE_ORPHAN_FILES"))
-                .hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$files\" EXECUTE REMOVE_ORPHAN_FILES"))
+                .failure().hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$snapshots\" EXECUTE REMOVE_ORPHAN_FILES"))
+                .failure().hasMessage("This connector does not support table procedures");
     }
 
     @Test
@@ -5861,8 +6144,8 @@ public abstract class BaseIcebergConnectorTest
     {
         String tableName = "test_updating_invalid_table_property_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a INT, b INT)");
-        assertThatThrownBy(() -> query("ALTER TABLE " + tableName + " SET PROPERTIES not_a_valid_table_property = 'a value'"))
-                .hasMessage("Catalog 'iceberg' table property 'not_a_valid_table_property' does not exist");
+        assertThat(query("ALTER TABLE " + tableName + " SET PROPERTIES not_a_valid_table_property = 'a value'"))
+                .failure().hasMessage("Catalog 'iceberg' table property 'not_a_valid_table_property' does not exist");
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -5947,20 +6230,20 @@ public abstract class BaseIcebergConnectorTest
         long oldSnapshotId = getCurrentSnapshotId(tableName);
         assertUpdate(format("INSERT INTO %s VALUES 4,5,6", tableName), 3);
         assertQuery(format("SELECT * FROM %s FOR VERSION AS OF %d", tableName, oldSnapshotId), "VALUES 1,2,3");
-        assertThatThrownBy(() -> query(format("INSERT INTO \"%s@%d\" VALUES 7,8,9", tableName, oldSnapshotId)))
-                .hasMessage(format("Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
-        assertThatThrownBy(() -> query(format("DELETE FROM \"%s@%d\" WHERE col = 5", tableName, oldSnapshotId)))
-                .hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
-        assertThatThrownBy(() -> query(format("UPDATE \"%s@%d\" SET col = 50 WHERE col = 5", tableName, oldSnapshotId)))
-                .hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
-        assertThatThrownBy(() -> query(format("INSERT INTO \"%s@%d\" VALUES 7,8,9", tableName, getCurrentSnapshotId(tableName))))
-                .hasMessage(format("Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, getCurrentSnapshotId(tableName)));
-        assertThatThrownBy(() -> query(format("DELETE FROM \"%s@%d\" WHERE col = 9", tableName, getCurrentSnapshotId(tableName))))
-                .hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, getCurrentSnapshotId(tableName)));
+        assertThat(query(format("INSERT INTO \"%s@%d\" VALUES 7,8,9", tableName, oldSnapshotId)))
+                .failure().hasMessage(format("Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
+        assertThat(query(format("DELETE FROM \"%s@%d\" WHERE col = 5", tableName, oldSnapshotId)))
+                .failure().hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
+        assertThat(query(format("UPDATE \"%s@%d\" SET col = 50 WHERE col = 5", tableName, oldSnapshotId)))
+                .failure().hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
+        assertThat(query(format("INSERT INTO \"%s@%d\" VALUES 7,8,9", tableName, getCurrentSnapshotId(tableName))))
+                .failure().hasMessage(format("Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, getCurrentSnapshotId(tableName)));
+        assertThat(query(format("DELETE FROM \"%s@%d\" WHERE col = 9", tableName, getCurrentSnapshotId(tableName))))
+                .failure().hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, getCurrentSnapshotId(tableName)));
         assertThatThrownBy(() -> assertUpdate(format("UPDATE \"%s@%d\" set col = 50 WHERE col = 5", tableName, getCurrentSnapshotId(tableName))))
                 .hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, getCurrentSnapshotId(tableName)));
-        assertThatThrownBy(() -> query(format("ALTER TABLE \"%s@%d\" EXECUTE OPTIMIZE", tableName, oldSnapshotId)))
-                .hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
+        assertThat(query(format("ALTER TABLE \"%s@%d\" EXECUTE OPTIMIZE", tableName, oldSnapshotId)))
+                .failure().hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, oldSnapshotId));
         assertQuery(format("SELECT * FROM %s", tableName), "VALUES 1,2,3,4,5,6");
 
         assertUpdate("DROP TABLE " + tableName);
@@ -6081,44 +6364,54 @@ public abstract class BaseIcebergConnectorTest
         assertQuerySucceeds("CREATE TABLE " + tableName + "(col1 varchar)");
         long v1SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v1SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR))
-                .returnsEmptyResult();
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR))
+                .isEmpty();
 
         assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN  col2 integer");
         assertThat(query("SELECT * FROM " + tableName))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
-                .returnsEmptyResult();
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .isEmpty();
 
         assertUpdate("INSERT INTO " + tableName + " VALUES ('a', 11)", 1);
         long v2SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v2SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 11)");
         assertThat(query("SELECT * FROM " + tableName))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 11)");
 
         assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN  col3 bigint");
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v2SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 11)");
         assertThat(query("SELECT * FROM " + tableName))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BIGINT))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BIGINT))
                 .matches("VALUES (VARCHAR 'a', 11, CAST(NULL AS bigint))");
 
         assertUpdate("INSERT INTO " + tableName + " VALUES ('b', 22, 32)", 1);
         long v3SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v1SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR))
-                .returnsEmptyResult();
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR))
+                .isEmpty();
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v2SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 11)");
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v3SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BIGINT))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BIGINT))
                 .matches("VALUES (VARCHAR 'a', 11, NULL), (VARCHAR 'b', 22, BIGINT '32')");
         assertThat(query("SELECT * FROM " + tableName))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BIGINT))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BIGINT))
                 .matches("VALUES (VARCHAR 'a', 11, NULL), (VARCHAR 'b', 22, BIGINT '32')");
     }
 
@@ -6130,42 +6423,51 @@ public abstract class BaseIcebergConnectorTest
         assertQuerySucceeds("CREATE TABLE " + tableName + "(col1 varchar, col2 integer, col3 boolean)");
         long v1SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v1SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
-                .returnsEmptyResult();
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
+                .isEmpty();
 
         assertUpdate("INSERT INTO " + tableName + " VALUES ('a', 1, true)", 1);
         long v2SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v2SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
                 .matches("VALUES (VARCHAR 'a', 1, true)");
 
         assertUpdate("ALTER TABLE " + tableName + " DROP COLUMN  col3");
         assertUpdate("INSERT INTO " + tableName + " VALUES ('b', 2)", 1);
         long v3SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v3SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 1), (VARCHAR 'b', 2)");
         assertThat(query("SELECT * FROM " + tableName))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 1), (VARCHAR 'b', 2)");
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v2SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
                 .matches("VALUES (VARCHAR 'a', 1, true)");
 
         assertUpdate("ALTER TABLE " + tableName + " DROP COLUMN  col2");
         assertUpdate("INSERT INTO " + tableName + " VALUES ('c')", 1);
         long v4SnapshotId = getCurrentSnapshotId(tableName);
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v4SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR))
                 .matches("VALUES (VARCHAR 'a'), (VARCHAR 'b'), (VARCHAR 'c')");
         assertThat(query("SELECT * FROM " + tableName))
-                .hasOutputTypes(ImmutableList.of(VARCHAR))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR))
                 .matches("VALUES (VARCHAR 'a'), (VARCHAR 'b'), (VARCHAR 'c')");
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v3SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER))
                 .matches("VALUES (VARCHAR 'a', 1), (VARCHAR 'b', 2)");
         assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF " + v2SnapshotId))
-                .hasOutputTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
+                .result()
+                .hasTypes(ImmutableList.of(VARCHAR, INTEGER, BOOLEAN))
                 .matches("VALUES (VARCHAR 'a', 1, true)");
 
         assertUpdate("DROP TABLE " + tableName);
@@ -6262,6 +6564,22 @@ public abstract class BaseIcebergConnectorTest
         List<Long> snapshotsAfterDelete = getTableHistory(tableName);
         assertThat(snapshotsAfterDelete.size()).isGreaterThan(snapshots.size());
         assertThat(snapshotsAfterDelete).containsAll(snapshots);
+    }
+
+    @Test
+    public void testDeleteRetainsMetadataFile()
+    {
+        String tableName = "test_delete_retains_metadata_file_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(c1 INT, c2 INT)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 1), (2, 2), (3, 3)", 3);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (3, 3), (4, 4), (5, 5)", 3);
+        List<Long> metadataLogEntries = getLatestSequenceNumbersInMetadataLogEntries(tableName);
+
+        assertUpdate("DELETE FROM " + tableName + " WHERE c1 < 4", 4);
+        List<Long> metadataLogEntriesAfterDelete = getLatestSequenceNumbersInMetadataLogEntries(tableName);
+        assertThat(metadataLogEntriesAfterDelete)
+                .hasSizeGreaterThan(metadataLogEntries.size())
+                .containsAll(metadataLogEntries);
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -6966,7 +7284,7 @@ public abstract class BaseIcebergConnectorTest
         assertQueryFails("ALTER TABLE " + tableName + " EXECUTE vacuum", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("ALTER TABLE " + tableName + " RENAME TO bad_person_some_new_name", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("ALTER TABLE " + tableName + " ADD COLUMN foo int", "Metadata not found in metadata location for table " + schemaTableName);
-        // TODO (https://github.com/trinodb/trino/issues/16248) ADD field
+        assertQueryFails("ALTER TABLE " + tableName + " ADD COLUMN independence.month int", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN country", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN independence.month", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES format = 'PARQUET'", "Metadata not found in metadata location for table " + schemaTableName);
@@ -7013,7 +7331,7 @@ public abstract class BaseIcebergConnectorTest
                 .setSchema(schema)
                 .build();
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession)
+        QueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession)
                 .build();
         queryRunner.installPlugin(new IcebergPlugin());
         queryRunner.createCatalog(
@@ -7072,13 +7390,13 @@ public abstract class BaseIcebergConnectorTest
         // Add duplicate field to produce validation error while reading the metadata file
         fieldsNode.add(newFieldNode);
 
-        String modifiedJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonNode);
-        try (OutputStream outputStream = fileSystem.newOutputFile(Location.of(metadataFileLocation)).createOrOverwrite()) {
-            // Corrupt metadata file by overwriting the invalid metadata content
-            outputStream.write(modifiedJson.getBytes(UTF_8));
-        }
-        assertThatThrownBy(() -> query("SELECT * FROM " + tableName))
-                .hasMessage("Invalid metadata file for table tpch.%s".formatted(tableName));
+        byte[] modifiedJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(jsonNode);
+
+        // Corrupt metadata file by overwriting the invalid metadata content
+        fileSystem.newOutputFile(Location.of(metadataFileLocation)).createOrOverwrite(modifiedJson);
+
+        assertThat(query("SELECT * FROM " + tableName))
+                .failure().hasMessage("Invalid metadata file for table tpch.%s".formatted(tableName));
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -7401,7 +7719,7 @@ public abstract class BaseIcebergConnectorTest
                     WHERE
                         d.following_holiday = true AND
                         d.date BETWEEN DATE '2023-01-01' AND DATE '2024-01-01'""".formatted(salesTable.getName(), dimensionTable.getName());
-            MaterializedResultWithQueryId result = getDistributedQueryRunner().executeWithQueryId(
+            MaterializedResultWithPlan result = getDistributedQueryRunner().executeWithPlan(
                     Session.builder(getSession())
                             .setCatalogSessionProperty(catalog, DYNAMIC_FILTERING_WAIT_TIMEOUT, "10s")
                             .build(),
@@ -7411,11 +7729,11 @@ public abstract class BaseIcebergConnectorTest
                             .setSystemProperty(ENABLE_DYNAMIC_FILTERING, "false")
                             .build(),
                     selectQuery);
-            assertEqualsIgnoreOrder(result.getResult(), expected);
+            assertEqualsIgnoreOrder(result.result(), expected);
 
             DynamicFilterService.DynamicFiltersStats dynamicFiltersStats = getDistributedQueryRunner().getCoordinator()
                     .getQueryManager()
-                    .getFullQueryInfo(result.getQueryId())
+                    .getFullQueryInfo(result.queryId())
                     .getQueryStats()
                     .getDynamicFiltersStats();
             // The dynamic filter reduces the range specified for the partition column `date` from `date :: [[2023-01-01, 2024-01-01]]` to `date :: {[2023-01-02]}`
@@ -7430,6 +7748,33 @@ public abstract class BaseIcebergConnectorTest
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
         assertThat(e).hasMessageMatching("Table name must be shorter than or equal to '128' characters but got .*");
+    }
+
+    @Test
+    public void testCreateTableWithCompressionCodec()
+    {
+        for (HiveCompressionCodec compressionCodec : HiveCompressionCodec.values()) {
+            testCreateTableWithCompressionCodec(compressionCodec);
+        }
+    }
+
+    private void testCreateTableWithCompressionCodec(HiveCompressionCodec compressionCodec)
+    {
+        Session session = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "compression_codec", compressionCodec.name())
+                .build();
+        String tableName = "test_table_with_compression_" + compressionCodec;
+        String createTableSql = format("CREATE TABLE %s AS TABLE tpch.tiny.nation", tableName);
+        // TODO (https://github.com/trinodb/trino/issues/9142) Support LZ4 compression with native Parquet writer
+        if ((format == IcebergFileFormat.PARQUET || format == AVRO) && compressionCodec == HiveCompressionCodec.LZ4) {
+            assertTrinoExceptionThrownBy(() -> computeActual(session, createTableSql))
+                    .hasMessage("Compression codec LZ4 not supported for " + format.humanName());
+            return;
+        }
+        assertUpdate(session, createTableSql, 25);
+        assertQuery("SELECT * FROM " + tableName, "SELECT * FROM nation");
+        assertQuery("SELECT count(*) FROM " + tableName, "VALUES 25");
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -7774,6 +8119,14 @@ public abstract class BaseIcebergConnectorTest
                 .collect(toImmutableList());
     }
 
+    private List<Long> getLatestSequenceNumbersInMetadataLogEntries(String tableName)
+    {
+        return getQueryRunner().execute(format("SELECT latest_sequence_number FROM \"%s$metadata_log_entries\"", tableName))
+                .getOnlyColumn()
+                .map(Long.class::cast)
+                .collect(toImmutableList());
+    }
+
     private long getCurrentSnapshotId(String tableName)
     {
         return (long) computeScalar("SELECT snapshot_id FROM \"" + tableName + "$snapshots\" ORDER BY committed_at DESC FETCH FIRST 1 ROW WITH TIES");
@@ -7823,8 +8176,8 @@ public abstract class BaseIcebergConnectorTest
     private QueryId executeWithQueryId(String sql)
     {
         return getDistributedQueryRunner()
-                .executeWithQueryId(getSession(), sql)
-                .getQueryId();
+                .executeWithPlan(getSession(), sql)
+                .queryId();
     }
 
     private void assertQueryIdStored(String tableName, QueryId queryId)

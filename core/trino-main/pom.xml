@@ -5,14 +5,17 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>438-SNAPSHOT</version>
+        <version>446-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-main</artifactId>
+    <description>Trino - Engine</description>
 
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
+        <!-- TODO enable @GuardedBy checks in trino-main -->
+        <trino.error-prone.guarded-by>WARN</trino.error-prone.guarded-by>
     </properties>
 
     <dependencies>
@@ -205,12 +208,6 @@
         <dependency>
             <groupId>io.airlift.discovery</groupId>
             <artifactId>discovery-server</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>javax.validation</groupId>
-                    <artifactId>validation-api</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -240,12 +237,12 @@
 
         <dependency>
             <groupId>io.opentelemetry</groupId>
-            <artifactId>opentelemetry-sdk-trace</artifactId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
         </dependency>
 
         <dependency>
-            <groupId>io.trino</groupId>
-            <artifactId>re2j</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-trace</artifactId>
         </dependency>
 
         <dependency>
@@ -300,6 +297,11 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-re2j</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-spi</artifactId>
         </dependency>
 
@@ -311,6 +313,11 @@
         <dependency>
             <groupId>jakarta.annotation</groupId>
             <artifactId>jakarta.annotation-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
         </dependency>
 
         <dependency>
@@ -336,12 +343,7 @@
         <dependency>
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-analysis-common</artifactId>
-            <version>9.9.1</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.eclipse.jetty.toolchain</groupId>
-            <artifactId>jetty-jakarta-servlet-api</artifactId>
+            <version>9.10.0</version>
         </dependency>
 
         <dependency>
@@ -523,35 +525,14 @@
         </dependency>
     </dependencies>
 
-    <profiles>
-        <profile>
-            <id>benchmarks</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.codehaus.mojo</groupId>
-                        <artifactId>exec-maven-plugin</artifactId>
-                        <configuration>
-                            <executable>${java.home}/bin/java</executable>
-                            <arguments>
-                                <argument>-DoutputDirectory=benchmark_outputs</argument>
-                                <argument>-classpath</argument>
-                                <classpath />
-                                <argument>io.trino.benchmark.BenchmarkSuite</argument>
-                            </arguments>
-                            <classpathScope>test</classpathScope>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>benchmarks</id>
-                                <goals>
-                                    <goal>exec</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>**/node_modules/**</exclude>
+                </excludes>
+            </resource>
+        </resources>
+    </build>
 </project>

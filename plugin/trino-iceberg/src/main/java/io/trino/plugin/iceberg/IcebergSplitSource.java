@@ -24,13 +24,10 @@ import com.google.common.io.Closer;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.cache.NonEvictableCache;
-import io.trino.filesystem.Location;
-import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.filesystem.TrinoInputFile;
+import io.trino.filesystem.cache.CachingHostAddressProvider;
 import io.trino.plugin.iceberg.delete.DeleteFile;
 import io.trino.plugin.iceberg.util.DataFileWithDeleteFiles;
 import io.trino.spi.SplitWeight;
-import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplit;
@@ -67,6 +64,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -81,16 +79,16 @@ import static io.trino.cache.CacheUtils.uncheckedCacheGet;
 import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.plugin.iceberg.ExpressionConverter.isConvertableToIcebergExpression;
 import static io.trino.plugin.iceberg.ExpressionConverter.toIcebergExpression;
-import static io.trino.plugin.iceberg.IcebergColumnHandle.fileModifiedTimeColumnHandle;
-import static io.trino.plugin.iceberg.IcebergColumnHandle.pathColumnHandle;
-import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_FILESYSTEM_ERROR;
 import static io.trino.plugin.iceberg.IcebergMetadataColumn.isMetadataColumnId;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getSplitSize;
 import static io.trino.plugin.iceberg.IcebergSplitManager.ICEBERG_DOMAIN_COMPACTION_THRESHOLD;
 import static io.trino.plugin.iceberg.IcebergTypes.convertIcebergValueToTrino;
 import static io.trino.plugin.iceberg.IcebergUtil.getColumnHandle;
+import static io.trino.plugin.iceberg.IcebergUtil.getFileModifiedTimePathDomain;
+import static io.trino.plugin.iceberg.IcebergUtil.getModificationTime;
 import static io.trino.plugin.iceberg.IcebergUtil.getPartitionKeys;
 import static io.trino.plugin.iceberg.IcebergUtil.getPartitionValues;
+import static io.trino.plugin.iceberg.IcebergUtil.getPathDomain;
 import static io.trino.plugin.iceberg.IcebergUtil.primitiveFieldTypes;
 import static io.trino.plugin.iceberg.TypeConverter.toIcebergType;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
@@ -108,9 +106,10 @@ public class IcebergSplitSource
     private static final ConnectorSplitBatch EMPTY_BATCH = new ConnectorSplitBatch(ImmutableList.of(), false);
     private static final ConnectorSplitBatch NO_MORE_SPLITS_BATCH = new ConnectorSplitBatch(ImmutableList.of(), true);
 
-    private final TrinoFileSystemFactory fileSystemFactory;
+    private final IcebergFileSystemFactory fileSystemFactory;
     private final ConnectorSession session;
     private final IcebergTableHandle tableHandle;
+    private final Map<String, String> fileIoProperties;
     private final TableScan tableScan;
     private final Optional<Long> maxScannedFileSizeInBytes;
     private final Map<Integer, Type.PrimitiveType> fieldIdToType;
@@ -126,21 +125,25 @@ public class IcebergSplitSource
     private final Domain pathDomain;
     private final Domain fileModifiedTimeDomain;
     private final OptionalLong limit;
+    private final Set<Integer> predicatedColumnIds;
 
     private TupleDomain<IcebergColumnHandle> pushedDownDynamicFilterPredicate;
     private CloseableIterable<FileScanTask> fileScanIterable;
     private long targetSplitSize;
     private CloseableIterator<FileScanTask> fileScanIterator;
     private Iterator<FileScanTask> fileTasksIterator = emptyIterator();
+    private TupleDomain<IcebergColumnHandle> fileStatisticsDomain;
 
     private final boolean recordScannedFiles;
     private final ImmutableSet.Builder<DataFileWithDeleteFiles> scannedFiles = ImmutableSet.builder();
     private long outputRowsLowerBound;
+    private final CachingHostAddressProvider cachingHostAddressProvider;
 
     public IcebergSplitSource(
-            TrinoFileSystemFactory fileSystemFactory,
+            IcebergFileSystemFactory fileSystemFactory,
             ConnectorSession session,
             IcebergTableHandle tableHandle,
+            Map<String, String> fileIoProperties,
             TableScan tableScan,
             Optional<DataSize> maxScannedFileSize,
             DynamicFilter dynamicFilter,
@@ -148,11 +151,13 @@ public class IcebergSplitSource
             Constraint constraint,
             TypeManager typeManager,
             boolean recordScannedFiles,
-            double minimumAssignedSplitWeight)
+            double minimumAssignedSplitWeight,
+            CachingHostAddressProvider cachingHostAddressProvider)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.session = requireNonNull(session, "session is null");
         this.tableHandle = requireNonNull(tableHandle, "tableHandle is null");
+        this.fileIoProperties = requireNonNull(fileIoProperties, "fileIoProperties is null");
         this.tableScan = requireNonNull(tableScan, "tableScan is null");
         this.maxScannedFileSizeInBytes = maxScannedFileSize.map(DataSize::toBytes);
         this.fieldIdToType = primitiveFieldTypes(tableScan.schema());
@@ -174,7 +179,14 @@ public class IcebergSplitSource
                 tableHandle.getLimit(),
                 tableHandle.getUnenforcedPredicate());
         this.limit = tableHandle.getLimit();
+        this.predicatedColumnIds = Stream.concat(
+                        tableHandle.getUnenforcedPredicate().getDomains().orElse(ImmutableMap.of()).keySet().stream(),
+                        dynamicFilter.getColumnsCovered().stream()
+                                .map(IcebergColumnHandle.class::cast))
+                .map(IcebergColumnHandle::getId)
+                .collect(toImmutableSet());
         this.fileModifiedTimeDomain = getFileModifiedTimePathDomain(tableHandle.getEnforcedPredicate());
+        this.cachingHostAddressProvider = requireNonNull(cachingHostAddressProvider, "cachingHostAddressProvider is null");
     }
 
     @Override
@@ -188,8 +200,6 @@ public class IcebergSplitSource
         }
 
         if (fileScanIterable == null) {
-            // Used to avoid duplicating work if the Dynamic Filter was already pushed down to the Iceberg API
-            boolean dynamicFilterIsComplete = dynamicFilter.isComplete();
             this.pushedDownDynamicFilterPredicate = dynamicFilter.getCurrentPredicate()
                     .transformKeys(IcebergColumnHandle.class::cast)
                     .filter((columnHandle, domain) -> isConvertableToIcebergExpression(domain));
@@ -197,8 +207,7 @@ public class IcebergSplitSource
                     .intersect(pushedDownDynamicFilterPredicate);
             // TODO: (https://github.com/trinodb/trino/issues/9743): Consider removing TupleDomain#simplify
             TupleDomain<IcebergColumnHandle> simplifiedPredicate = fullPredicate.simplify(ICEBERG_DOMAIN_COMPACTION_THRESHOLD);
-            boolean usedSimplifiedPredicate = !simplifiedPredicate.equals(fullPredicate);
-            if (usedSimplifiedPredicate) {
+            if (!simplifiedPredicate.equals(fullPredicate)) {
                 // Pushed down predicate was simplified, always evaluate it against individual splits
                 this.pushedDownDynamicFilterPredicate = TupleDomain.all();
             }
@@ -212,8 +221,8 @@ public class IcebergSplitSource
             }
 
             Expression filterExpression = toIcebergExpression(effectivePredicate);
-            // If the Dynamic Filter will be evaluated against each file, stats are required. Otherwise, skip them.
-            boolean requiresColumnStats = usedSimplifiedPredicate || !dynamicFilterIsComplete;
+            // Use stats to populate fileStatisticsDomain if there are predicated columns. Otherwise, skip them.
+            boolean requiresColumnStats = !predicatedColumnIds.isEmpty();
             TableScan scan = tableScan.filter(filterExpression);
             if (requiresColumnStats) {
                 scan = scan.includeColumnStats();
@@ -243,7 +252,8 @@ public class IcebergSplitSource
                 FileScanTask wholeFileTask = fileScanIterator.next();
                 boolean fileHasNoDeletions = wholeFileTask.deletes().isEmpty();
 
-                if (pruneFileScanTask(wholeFileTask, fileHasNoDeletions, dynamicFilterPredicate)) {
+                fileStatisticsDomain = createFileStatisticsDomain(wholeFileTask);
+                if (pruneFileScanTask(wholeFileTask, fileHasNoDeletions, dynamicFilterPredicate, fileStatisticsDomain)) {
                     continue;
                 }
 
@@ -268,12 +278,12 @@ public class IcebergSplitSource
                 // In theory, .split() could produce empty iterator, so let's evaluate the outer loop condition again.
                 continue;
             }
-            splits.add(toIcebergSplit(fileTasksIterator.next()));
+            splits.add(toIcebergSplit(fileTasksIterator.next(), fileStatisticsDomain));
         }
         return completedFuture(new ConnectorSplitBatch(splits, isFinished()));
     }
 
-    private boolean pruneFileScanTask(FileScanTask fileScanTask, boolean fileHasNoDeletions, TupleDomain<IcebergColumnHandle> dynamicFilterPredicate)
+    private boolean pruneFileScanTask(FileScanTask fileScanTask, boolean fileHasNoDeletions, TupleDomain<IcebergColumnHandle> dynamicFilterPredicate, TupleDomain<IcebergColumnHandle> fileStatisticsDomain)
     {
         if (fileHasNoDeletions &&
                 maxScannedFileSizeInBytes.isPresent() &&
@@ -285,13 +295,13 @@ public class IcebergSplitSource
             return true;
         }
         if (!fileModifiedTimeDomain.isAll()) {
-            long fileModifiedTime = getModificationTime(fileScanTask.file().path().toString());
+            long fileModifiedTime = getModificationTime(fileScanTask.file().path().toString(), fileSystemFactory.create(session.getIdentity(), fileIoProperties));
             if (!fileModifiedTimeDomain.includesNullableValue(packDateTimeWithZone(fileModifiedTime, UTC_KEY))) {
                 return true;
             }
         }
 
-        Schema fileSchema = fileScanTask.spec().schema();
+        Schema fileSchema = fileScanTask.schema();
         Map<Integer, Optional<String>> partitionKeys = getPartitionKeys(fileScanTask);
 
         Set<IcebergColumnHandle> identityPartitionColumns = partitionKeys.keySet().stream()
@@ -307,12 +317,7 @@ public class IcebergSplitSource
                     dynamicFilterPredicate)) {
                 return true;
             }
-            if (!fileMatchesPredicate(
-                    fieldIdToType,
-                    dynamicFilterPredicate,
-                    fileScanTask.file().lowerBounds(),
-                    fileScanTask.file().upperBounds(),
-                    fileScanTask.file().nullValueCounts())) {
+            if (!fileStatisticsDomain.overlaps(dynamicFilterPredicate)) {
                 return true;
             }
         }
@@ -327,17 +332,6 @@ public class IcebergSplitSource
                 .map(PartitionField::sourceId)
                 .collect(toImmutableSet())
                 .containsAll(projectedBaseColumns);
-    }
-
-    private long getModificationTime(String path)
-    {
-        try {
-            TrinoInputFile inputFile = fileSystemFactory.create(session).newInputFile(Location.of(path));
-            return inputFile.lastModified().toEpochMilli();
-        }
-        catch (IOException e) {
-            throw new TrinoException(ICEBERG_FILESYSTEM_ERROR, "Failed to get file modification time: " + path, e);
-        }
     }
 
     private void finish()
@@ -375,23 +369,30 @@ public class IcebergSplitSource
         }
     }
 
+    private TupleDomain<IcebergColumnHandle> createFileStatisticsDomain(FileScanTask wholeFileTask)
+    {
+        List<IcebergColumnHandle> predicatedColumns = wholeFileTask.schema().columns().stream()
+                .filter(column -> predicatedColumnIds.contains(column.fieldId()))
+                .map(column -> getColumnHandle(column, typeManager))
+                .collect(toImmutableList());
+        return createFileStatisticsDomain(
+                fieldIdToType,
+                wholeFileTask.file().lowerBounds(),
+                wholeFileTask.file().upperBounds(),
+                wholeFileTask.file().nullValueCounts(),
+                predicatedColumns);
+    }
+
     @VisibleForTesting
-    static boolean fileMatchesPredicate(
-            Map<Integer, Type.PrimitiveType> primitiveTypeForFieldId,
-            TupleDomain<IcebergColumnHandle> dynamicFilterPredicate,
+    static TupleDomain<IcebergColumnHandle> createFileStatisticsDomain(
+            Map<Integer, Type.PrimitiveType> fieldIdToType,
             @Nullable Map<Integer, ByteBuffer> lowerBounds,
             @Nullable Map<Integer, ByteBuffer> upperBounds,
-            @Nullable Map<Integer, Long> nullValueCounts)
+            @Nullable Map<Integer, Long> nullValueCounts,
+            List<IcebergColumnHandle> predicatedColumns)
     {
-        if (dynamicFilterPredicate.isNone()) {
-            return false;
-        }
-        Map<IcebergColumnHandle, Domain> domains = dynamicFilterPredicate.getDomains().orElseThrow();
-
-        for (Map.Entry<IcebergColumnHandle, Domain> domainEntry : domains.entrySet()) {
-            IcebergColumnHandle column = domainEntry.getKey();
-            Domain domain = domainEntry.getValue();
-
+        ImmutableMap.Builder<IcebergColumnHandle, Domain> domainBuilder = ImmutableMap.builder();
+        for (IcebergColumnHandle column : predicatedColumns) {
             int fieldId = column.getId();
             boolean mayContainNulls;
             if (nullValueCounts == null) {
@@ -401,17 +402,16 @@ public class IcebergSplitSource
                 Long nullValueCount = nullValueCounts.get(fieldId);
                 mayContainNulls = nullValueCount == null || nullValueCount > 0;
             }
-            Type type = primitiveTypeForFieldId.get(fieldId);
-            Domain statisticsDomain = domainForStatistics(
+            Type type = fieldIdToType.get(fieldId);
+            domainBuilder.put(
                     column,
-                    lowerBounds == null ? null : fromByteBuffer(type, lowerBounds.get(fieldId)),
-                    upperBounds == null ? null : fromByteBuffer(type, upperBounds.get(fieldId)),
-                    mayContainNulls);
-            if (!domain.overlaps(statisticsDomain)) {
-                return false;
-            }
+                    domainForStatistics(
+                            column,
+                            lowerBounds == null ? null : fromByteBuffer(type, lowerBounds.get(fieldId)),
+                            upperBounds == null ? null : fromByteBuffer(type, upperBounds.get(fieldId)),
+                            mayContainNulls));
         }
-        return true;
+        return TupleDomain.withColumnDomains(domainBuilder.buildOrThrow());
     }
 
     private static Domain domainForStatistics(
@@ -500,7 +500,7 @@ public class IcebergSplitSource
         return true;
     }
 
-    private IcebergSplit toIcebergSplit(FileScanTask task)
+    private IcebergSplit toIcebergSplit(FileScanTask task, TupleDomain<IcebergColumnHandle> fileStatisticsDomain)
     {
         return new IcebergSplit(
                 task.file().path().toString(),
@@ -514,28 +514,9 @@ public class IcebergSplitSource
                 task.deletes().stream()
                         .map(DeleteFile::fromIceberg)
                         .collect(toImmutableList()),
-                SplitWeight.fromProportion(clamp((double) task.length() / tableScan.targetSplitSize(), minimumAssignedSplitWeight, 1.0)));
-    }
-
-    private static Domain getPathDomain(TupleDomain<IcebergColumnHandle> effectivePredicate)
-    {
-        IcebergColumnHandle pathColumn = pathColumnHandle();
-        Domain domain = effectivePredicate.getDomains().orElseThrow(() -> new IllegalArgumentException("Unexpected NONE tuple domain"))
-                .get(pathColumn);
-        if (domain == null) {
-            return Domain.all(pathColumn.getType());
-        }
-        return domain;
-    }
-
-    private static Domain getFileModifiedTimePathDomain(TupleDomain<IcebergColumnHandle> effectivePredicate)
-    {
-        IcebergColumnHandle fileModifiedTimeColumn = fileModifiedTimeColumnHandle();
-        Domain domain = effectivePredicate.getDomains().orElseThrow(() -> new IllegalArgumentException("Unexpected NONE tuple domain"))
-                .get(fileModifiedTimeColumn);
-        if (domain == null) {
-            return Domain.all(fileModifiedTimeColumn.getType());
-        }
-        return domain;
+                SplitWeight.fromProportion(clamp((double) task.length() / tableScan.targetSplitSize(), minimumAssignedSplitWeight, 1.0)),
+                fileStatisticsDomain,
+                fileIoProperties,
+                cachingHostAddressProvider.getHosts(task.file().path().toString(), ImmutableList.of()));
     }
 }

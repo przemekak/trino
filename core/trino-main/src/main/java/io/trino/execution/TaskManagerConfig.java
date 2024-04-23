@@ -32,19 +32,23 @@ import java.util.concurrent.TimeUnit;
 import static io.trino.util.MachineInfo.getAvailablePhysicalProcessorCount;
 import static it.unimi.dsi.fastutil.HashCommon.nextPowerOfTwo;
 import static java.lang.Math.clamp;
+import static java.math.BigDecimal.TWO;
 
 @DefunctConfig({
         "experimental.big-query-max-task-memory",
-        "task.max-memory",
+        "sink.new-implementation",
         "task.http-notification-threads",
         "task.info-refresh-max-wait",
-        "task.operator-pre-allocated-memory",
-        "sink.new-implementation",
         "task.legacy-scheduling-behavior",
-        "task.level-absolute-priority"})
+        "task.level-absolute-priority",
+        "task.max-memory",
+        "task.operator-pre-allocated-memory",
+        "task.shard.max-threads",
+        "task.verbose-stats",
+})
 public class TaskManagerConfig
 {
-    private boolean threadPerDriverSchedulerEnabled;
+    private boolean threadPerDriverSchedulerEnabled = true;
     private boolean perOperatorCpuTimerEnabled = true;
     private boolean taskCpuTimerEnabled = true;
     private boolean statisticsCpuTimerEnabled = true;
@@ -101,7 +105,7 @@ public class TaskManagerConfig
     private int taskYieldThreads = 3;
     private int driverTimeoutThreads = 5;
 
-    private BigDecimal levelTimeMultiplier = new BigDecimal(2.0);
+    private BigDecimal levelTimeMultiplier = TWO;
 
     @Config("experimental.thread-per-driver-scheduler-enabled")
     public TaskManagerConfig setThreadPerDriverSchedulerEnabled(boolean enabled)
@@ -166,7 +170,6 @@ public class TaskManagerConfig
         return perOperatorCpuTimerEnabled;
     }
 
-    @LegacyConfig("task.verbose-stats")
     @Config("task.per-operator-cpu-timer-enabled")
     public TaskManagerConfig setPerOperatorCpuTimerEnabled(boolean perOperatorCpuTimerEnabled)
     {
@@ -250,7 +253,6 @@ public class TaskManagerConfig
         return this;
     }
 
-    @NotNull
     public boolean isShareIndexLoading()
     {
         return shareIndexLoading;
@@ -283,11 +285,10 @@ public class TaskManagerConfig
         return maxWorkerThreads;
     }
 
-    @LegacyConfig("task.shard.max-threads")
     @Config("task.max-worker-threads")
-    public TaskManagerConfig setMaxWorkerThreads(int maxWorkerThreads)
+    public TaskManagerConfig setMaxWorkerThreads(String maxWorkerThreads)
     {
-        this.maxWorkerThreads = maxWorkerThreads;
+        this.maxWorkerThreads = ThreadCountParser.DEFAULT.parse(maxWorkerThreads);
         return this;
     }
 

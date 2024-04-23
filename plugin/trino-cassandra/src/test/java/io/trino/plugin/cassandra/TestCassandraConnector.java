@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.net.InetAddresses;
 import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
+import io.trino.spi.block.RowBlock;
 import io.trino.spi.block.SqlRow;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -289,7 +290,7 @@ public class TestCassandraConnector
                     assertThat(tupleValueBlock.getFieldCount()).isEqualTo(3);
 
                     CassandraColumnHandle tupleColumnHandle = (CassandraColumnHandle) columnHandles.get(columnIndex.get("typetuple"));
-                    List<CassandraType> tupleArgumentTypes = tupleColumnHandle.getCassandraType().getArgumentTypes();
+                    List<CassandraType> tupleArgumentTypes = tupleColumnHandle.cassandraType().getArgumentTypes();
                     int rawIndex = tupleValueBlock.getRawIndex();
                     assertThat(tupleArgumentTypes.get(0).getTrinoType().getLong(tupleValueBlock.getRawFieldBlock(0), rawIndex)).isEqualTo(rowNumber);
                     assertThat(tupleArgumentTypes.get(1).getTrinoType().getSlice(tupleValueBlock.getRawFieldBlock(1), rawIndex).toStringUtf8()).isEqualTo("text-" + rowNumber);
@@ -358,10 +359,10 @@ public class TestCassandraConnector
                     assertThat(VARCHAR.getSlice(value.getRawFieldBlock(15), valueRawIndex).toStringUtf8()).isEqualTo("[\"list\"]");
                     assertThat(VARCHAR.getSlice(value.getRawFieldBlock(16), valueRawIndex).toStringUtf8()).isEqualTo("{\"map\":1}");
                     assertThat(VARCHAR.getSlice(value.getRawFieldBlock(17), valueRawIndex).toStringUtf8()).isEqualTo("[true]");
-                    SqlRow tupleValue = value.getRawFieldBlock(18).getObject(valueRawIndex, SqlRow.class);
+                    SqlRow tupleValue = ((RowBlock) value.getRawFieldBlock(18)).getRow(valueRawIndex);
                     assertThat(tupleValue.getFieldCount()).isEqualTo(1);
                     assertThat(INTEGER.getInt(tupleValue.getRawFieldBlock(0), tupleValue.getRawIndex())).isEqualTo(123);
-                    SqlRow udtValue = value.getRawFieldBlock(19).getObject(valueRawIndex, SqlRow.class);
+                    SqlRow udtValue = ((RowBlock) value.getRawFieldBlock(19)).getRow(valueRawIndex);
                     assertThat(udtValue.getFieldCount()).isEqualTo(1);
                     assertThat(INTEGER.getInt(udtValue.getRawFieldBlock(0), tupleValue.getRawIndex())).isEqualTo(999);
 
@@ -453,7 +454,7 @@ public class TestCassandraConnector
         ImmutableMap.Builder<String, Integer> index = ImmutableMap.builder();
         int i = 0;
         for (ColumnHandle columnHandle : columnHandles) {
-            String name = ((CassandraColumnHandle) columnHandle).getName();
+            String name = ((CassandraColumnHandle) columnHandle).name();
             index.put(name, i);
             i++;
         }

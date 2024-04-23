@@ -14,8 +14,11 @@
 package io.trino.security;
 
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.security.Identity;
@@ -78,9 +81,9 @@ public abstract class ForwardingAccessControl
     }
 
     @Override
-    public void checkCanExecuteQuery(Identity identity)
+    public void checkCanExecuteQuery(Identity identity, QueryId queryId)
     {
-        delegate().checkCanExecuteQuery(identity);
+        delegate().checkCanExecuteQuery(identity, queryId);
     }
 
     @Override
@@ -384,9 +387,27 @@ public abstract class ForwardingAccessControl
     }
 
     @Override
-    public void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
+    public void checkCanGrantEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee, boolean grantOption)
     {
-        delegate().checkCanSetSystemSessionProperty(identity, propertyName);
+        delegate().checkCanGrantEntityPrivilege(context, privilege, entity, grantee, grantOption);
+    }
+
+    @Override
+    public void checkCanDenyEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee)
+    {
+        delegate().checkCanDenyEntityPrivilege(context, privilege, entity, grantee);
+    }
+
+    @Override
+    public void checkCanRevokeEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal revokee, boolean grantOption)
+    {
+        delegate().checkCanRevokeEntityPrivilege(context, privilege, entity, revokee, grantOption);
+    }
+
+    @Override
+    public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
+    {
+        delegate().checkCanSetSystemSessionProperty(identity, queryId, propertyName);
     }
 
     @Override

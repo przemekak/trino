@@ -594,12 +594,13 @@ public class TimeSharingTaskExecutor
                         // ignore random errors due to driver thread interruption
                         if (!split.isDestroyed()) {
                             if (t instanceof TrinoException trinoException) {
-                                log.error(t, "Error processing %s: %s: %s", split.getInfo(), trinoException.getErrorCode().getName(), trinoException.getMessage());
+                                log.debug(t, "Error processing %s: %s: %s", split.getInfo(), trinoException.getErrorCode().getName(), trinoException.getMessage());
                             }
                             else {
-                                log.error(t, "Error processing %s", split.getInfo());
+                                log.debug(t, "Error processing %s", split.getInfo());
                             }
                         }
+                        split.markFailed(t);
                         splitFinished(split);
                     }
                     finally {
@@ -911,7 +912,7 @@ public class TimeSharingTaskExecutor
             if (duration.compareTo(stuckSplitsWarningThreshold) >= 0) {
                 maxActiveSplitCount++;
                 stackTrace.append("\n");
-                stackTrace.append(format("\"%s\" tid=%s", splitInfo.getThreadId(), splitInfo.getThread().getId())).append("\n");
+                stackTrace.append(format("\"%s\" tid=%s", splitInfo.getThreadId(), splitInfo.getThread().threadId())).append("\n");
                 for (StackTraceElement traceElement : splitInfo.getThread().getStackTrace()) {
                     stackTrace.append("\tat ").append(traceElement).append("\n");
                 }
