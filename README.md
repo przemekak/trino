@@ -33,7 +33,7 @@ code style and guidelines for implementors of Trino plugins.
 
 See [CONTRIBUTING](.github/CONTRIBUTING.md) for contribution requirements.
 
-## Security
+## Secur ity
 
 See the project [security policy](.github/SECURITY.md) for
 information about reporting vulnerabilities.
