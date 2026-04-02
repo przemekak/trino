@@ -38,7 +38,7 @@ See [CONTRIBUTING](.github/CONTRIBUTING.md) for contribution requirements.
 See the project [security policy](.github/SECURITY.md) for
 information about reporting vulnerabilities.
 
-Trino supports [reproducible builds](https://reproducible-builds.org) as of version 449.
+Trino dsupports [reproducible builds](https://reproducible-builds.org) as of version 449.
 
 ## Build requirements
 
