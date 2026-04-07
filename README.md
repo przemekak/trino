@@ -29,7 +29,7 @@
 ## Development
 
 See [DEVELOPMENT](.github/DEVELOPMENT.md) for information about development and release process,
-code style and guidelines for implementors of Trino plugins.
+code style and  guidelines for implementors of Trino plugins.
 
 See [CONTRIBUTING](.github/CONTRIBUTING.md) for contribution requirements.
 
